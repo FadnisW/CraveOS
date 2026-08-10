@@ -1,0 +1,6 @@
+{
+  "name": "EatClub",
+  "description": "A fast, modern food delivery platform for craving top restaurant meals and exclusive deals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,315 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum OrderStatus {
+  PENDING_CONFIRMATION
+  PLACED
+  ACCEPTED_BY_KITCHEN
+  PREPARING
+  RIDER_ASSIGNED
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum BrandOrderStatus {
+  SENT_TO_KITCHEN
+  ACCEPTED
+  PREPARING
+  READY
+  REJECTED
+}
+
+enum PaymentStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum MembershipStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum TripStatus {
+  UNASSIGNED
+  ASSIGNED
+  PICKED_UP
+  DELIVERED
+}
+
+enum AddressType {
+  HOME
+  WORK
+  OTHER
+}
+
+model User {
+  id                String              @id @default(cuid())
+  phone             String              @unique
+  email             String?             @unique
+  name              String?
+  walletBalance     Int                 @default(0) // paise (e.g. 25000 = ₹250.00)
+  membership        Membership?
+  addresses         Address[]
+  orders            Order[]
+  walletTxns        WalletTransaction[]
+  referralCode      String              @unique
+  referredById      String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@map("users")
+}
+
+model Address {
+  id              String      @id @default(cuid())
+  userId          String
+  type            AddressType @default(HOME)
+  label           String
+  addressLine     String
+  landmark        String?
+  city            String
+  pincode         String
+  lat             Float
+  lng             Float
+  resolvedHubId   String
+  isDefault       Boolean     @default(false)
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders          Order[]
+  createdAt       DateTime    @default(now())
+
+  @@map("addresses")
+}
+
+model Brand {
+  id             String         @id @default(cuid())
+  name           String         // "BOX8", "MOJO Pizza", "ZAZA" ...
+  slug           String         @unique
+  tagline        String
+  cuisine        String[]
+  logoUrl        String
+  heroImageUrl   String
+  themeColor     String         // Hex color accent
+  isActive       Boolean        @default(true)
+  minOrderValue  Int            @default(149) // paise
+  brandKitchens  BrandKitchen[]
+
+  @@map("brands")
+}
+
+model Hub {
+  id             String         @id @default(cuid())
+  name           String         // "HSR Layout Hub #01"
+  city           String
+  lat            Float
+  lng            Float
+  servicePolygon Json           // GeoJSON polygon
+  brandKitchens  BrandKitchen[]
+  orders         Order[]
+
+  @@map("hubs")
+}
+
+model BrandKitchen {
+  id          String     @id @default(cuid())
+  brandId     String
+  hubId       String
+  isOpen      Boolean    @default(true)
+  brand       Brand      @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  hub         Hub        @relation(fields: [hubId], references: [id], onDelete: Cascade)
+  menuItems   MenuItem[]
+
+  @@unique([brandId, hubId])
+  @@map("brand_kitchens")
+}
+
+model MenuItem {
+  id             String       @id @default(cuid())
+  brandKitchenId String
+  name           String
+  description    String
+  mrpInPaise     Int          // Max Retail Price
+  memberPriceInPaise Int      // Discounted Eatclub Member Price
+  imageUrl       String
+  isVeg          Boolean      @default(true)
+  isBestseller   Boolean      @default(false)
+  isAvailable    Boolean      @default(true) // Hub-level 86'd out-of-stock flag
+  category       String
+  rating         Float        @default(4.5)
+  brandKitchen   BrandKitchen @relation(fields: [brandKitchenId], references: [id], onDelete: Cascade)
+
+  @@index([brandKitchenId, isAvailable])
+  @@map("menu_items")
+}
+
+model Cart {
+  id          String     @id @default(cuid())
+  userId      String     @unique
+  hubId       String
+  items       CartItem[]
+  updatedAt   DateTime   @updatedAt
+
+  @@map("carts")
+}
+
+model CartItem {
+  id             String   @id @default(cuid())
+  cartId         String
+  menuItemId     String
+  brandId        String   // Denormalized for fast multi-brand grouping
+  quantity       Int      @default(1)
+  optionsSnapshot Json?   // Customization options array
+  unitPricePaise Int
+  cart           Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  @@map("cart_items")
+}
+
+model Order {
+  id                 String         @id @default(cuid())
+  userId             String
+  addressId          String
+  hubId              String
+  status             OrderStatus    @default(PENDING_CONFIRMATION)
+  mrpTotalPaise      Int
+  memberSavingsPaise Int
+  deliveryFeePaise   Int            @default(0)
+  packagingFeePaise  Int            @default(0)
+  taxPaise           Int
+  finalPaidPaise     Int
+  discountBreakdown  Json           // { membership, coupon, wallet }
+  brandOrders        BrandOrder[]
+  payment            Payment?
+  deliveryTrip       DeliveryTrip?
+  user               User           @relation(fields: [userId], references: [id])
+  address            Address        @relation(fields: [addressId], references: [id])
+  hub                Hub            @relation(fields: [hubId], references: [id])
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("orders")
+}
+
+model BrandOrder {
+  id           String           @id @default(cuid())
+  orderId      String
+  brandId      String
+  status       BrandOrderStatus @default(SENT_TO_KITCHEN)
+  items        OrderItem[]
+  rejectedAt   DateTime?
+  rejectReason String?
+  order        Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, status])
+  @@map("brand_orders")
+}
+
+model OrderItem {
+  id             String     @id @default(cuid())
+  brandOrderId   String
+  menuItemId     String
+  nameSnapshot   String
+  priceSnapshot  Int
+  quantity       Int
+  brandOrder     BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  orderId        String        @unique
+  gateway        String        @default("razorpay")
+  gatewayOrderId String?
+  status         PaymentStatus @default(INITIATED)
+  amountInPaise  Int
+  order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+model Membership {
+  id          String           @id @default(cuid())
+  userId      String           @unique
+  planId      String
+  status      MembershipStatus @default(TRIAL)
+  trialEndsAt DateTime?
+  renewsAt    DateTime?
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("memberships")
+}
+
+model MembershipPlan {
+  id              String @id @default(cuid())
+  name            String // "Quarterly", "Annual"
+  durationDays    Int
+  priceInPaise    Int
+  flatDiscountPct Int    @default(30)
+
+  @@map("membership_plans")
+}
+
+model PricingRule {
+  id        String   @id @default(cuid())
+  type      String   // "HAPPY_HOUR" | "MEAL_OF_DAY" | "BOGO"
+  brandId   String?
+  startsAt  DateTime
+  endsAt    DateTime
+  config    Json
+
+  @@map("pricing_rules")
+}
+
+model DeliveryTrip {
+  id        String     @id @default(cuid())
+  orderId   String     @unique
+  riderId   String?
+  status    TripStatus @default(UNASSIGNED)
+  pickupLat Float
+  pickupLng Float
+  liveLat   Float?
+  liveLng   Float?
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_trips")
+}
+
+model WalletTransaction {
+  id            String   @id @default(cuid())
+  userId        String
+  amountInPaise Int      // signed (+ credit, - debit)
+  reason        String   // "REFERRAL_BONUS" | "ORDER_REFUND" | "ORDER_SPEND"
+  orderId       String?
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("wallet_transactions")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String   // "ORDER_CREATED" | "PAYMENT_CAPTURED" | "WALLET_REFUND"
+  actorId   String   // User or Staff ID
+  recordId  String   // Target entity ID
+  diff      Json?    // Financial or status delta
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}

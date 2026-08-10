@@ -1,0 +1,13 @@
+{
+  "name": "@craveos/shared-types",
+  "version": "1.0.0",
+  "description": "Shared TypeScript DTOs and Zod Schemas for CraveOS Monorepo",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
