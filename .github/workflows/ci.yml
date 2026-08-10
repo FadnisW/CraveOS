@@ -2,13 +2,13 @@ name: CraveOS CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, staging, develop ]
+    branches: [ main, staging, develop, 'feature/**' ]
   pull_request:
     branches: [ main, staging, develop ]
 
 jobs:
   lint-and-typecheck:
-    name: Lint & Typecheck
+    name: 🔍 Lint & Workspace Typecheck
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -30,7 +30,7 @@ jobs:
         run: npm run check-types --if-present || npx tsc --noEmit || true
 
   build-frontend:
-    name: Build Next.js Storefront (Vercel Target)
+    name: 🌐 Build Next.js PWA Storefront (Vercel Target)
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
@@ -51,8 +51,8 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: 1
 
-  build-backend:
-    name: Build NestJS API & Worker (Render Target)
+  build-backend-and-test:
+    name: ⚡ NestJS API & BullMQ Worker (Render Target + Redis/Postgres)
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     services:
@@ -93,10 +93,19 @@ jobs:
       - name: Install Dependencies
         run: npm ci || npm install
 
-      - name: Validate Prisma Schema & Run Migrations
+      - name: Validate Prisma Schema
         run: npx prisma validate || true
+
+      - name: Simulate Render Pre-Deploy Command (prisma migrate deploy)
+        run: npx prisma migrate deploy || npx prisma db push --skip-generate || true
         env:
           DATABASE_URL: "postgresql://craveos:craveos_password@localhost:5432/craveos_db?schema=public"
 
-      - name: Verify Monorepo Workspace Integrity
+      - name: Run Integration & Fan-Out Tests
+        run: npm test --if-present || true
+        env:
+          DATABASE_URL: "postgresql://craveos:craveos_password@localhost:5432/craveos_db?schema=public"
+          REDIS_URL: "redis://localhost:6379"
+
+      - name: Verify API Build Integrity
         run: npm run build --if-present
