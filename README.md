@@ -96,44 +96,44 @@ flowchart TD
 <table align="center">
   <tr>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/nextjs/nextjs.png" width="48" height="48" alt="Next.js" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/nextjs/nextjs-original.svg" width="48" height="48" alt="Next.js" /><br />
       <b>Next.js 14</b><br />
       <sub>PWA & Edge Storefront</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/nestjs/nestjs.png" width="48" height="48" alt="NestJS" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/nestjs/nestjs-original.svg" width="48" height="48" alt="NestJS" /><br />
       <b>NestJS 10</b><br />
       <sub>Modular Monolith</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/prisma/prisma.png" width="48" height="48" alt="Prisma" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/prisma/prisma-original.svg" width="48" height="48" alt="Prisma" /><br />
       <b>Prisma ORM</b><br />
       <sub>Type-Safe DB Layer</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/postgresql/postgresql.png" width="48" height="48" alt="PostgreSQL" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/postgresql/postgresql-original.svg" width="48" height="48" alt="PostgreSQL" /><br />
       <b>PostgreSQL 16</b><br />
       <sub>Master Relational DB</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/redis/redis.png" width="48" height="48" alt="Redis" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/redis/redis-original.svg" width="48" height="48" alt="Redis" /><br />
       <b>Redis 7 & BullMQ</b><br />
       <sub>Queues & Caching</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/tailwind/tailwind.png" width="48" height="48" alt="Tailwind CSS" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/tailwindcss/tailwindcss-original.svg" width="48" height="48" alt="Tailwind CSS" /><br />
       <b>Tailwind CSS</b><br />
       <sub>Design System</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/typescript/typescript.png" width="48" height="48" alt="TypeScript" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/typescript/typescript-original.svg" width="48" height="48" alt="TypeScript" /><br />
       <b>TypeScript</b><br />
       <sub>End-to-End Safety</sub>
     </td>
     <td align="center" width="160">
-      <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/docker/docker.png" width="48" height="48" alt="Docker" /><br />
+      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/docker/docker-original.svg" width="48" height="48" alt="Docker" /><br />
       <b>Docker Compose</b><br />
       <sub>Local Parity</sub>
     </td>
