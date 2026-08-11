@@ -91,9 +91,9 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               description: 'Multi-Brand Food Order',
               order_id: rzpOrder.razorpayOrderId,
               prefill: {
-                name: MOCK_USER.name,
-                email: MOCK_USER.email,
-                contact: MOCK_USER.phone,
+                name: user?.name || MOCK_USER.name,
+                email: user?.email || MOCK_USER.email,
+                contact: user?.phone || MOCK_USER.phone,
               },
               theme: {
                 color: '#E11D48',
@@ -209,7 +209,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               {[
                 { id: 'UPI', label: 'UPI (GPay / PhonePe)', icon: Smartphone },
                 { id: 'CARD', label: 'Credit / Debit Card', icon: CreditCard },
-                { id: 'WALLET', label: `Eatclub Wallet (₹${MOCK_USER.walletBalance})`, icon: Wallet },
+                { id: 'WALLET', label: `Eatclub Wallet (₹${user?.walletBalance ?? MOCK_USER.walletBalance})`, icon: Wallet },
                 { id: 'COD', label: 'Cash on Delivery', icon: Banknote },
               ].map((m) => {
                 const Icon = m.icon;
@@ -232,6 +232,17 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                 );
               })}
             </div>
+
+            {paymentMethod === 'UPI' && (
+              <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-xs space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+                  <span>💡 Razorpay Test Mode UPI Notice</span>
+                </div>
+                <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                  Real mobile banking apps (GPay, PhonePe) will reject sandbox QR codes with "Unable to pay" or "QR code invalid". Inside the Razorpay popup, enter <strong><code className="bg-amber-100 dark:bg-amber-900/60 px-1 rounded">success@razorpay</code></strong> as your test UPI ID or click <strong>Simulate Success</strong>.
+                </p>
+              </div>
+            )}
           </div>
 
         </div>

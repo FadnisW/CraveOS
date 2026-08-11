@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { CartProvider } from './context/CartContext';
-import { UserProvider } from './context/UserContext';
+import { UserProvider, useUser } from './context/UserContext';
 import { Navbar } from './components/Navbar';
 import { MobileBottomNav } from './components/MobileBottomNav';
 import { CartSidebar } from './components/CartSidebar';
@@ -25,6 +25,7 @@ import { BrandId, MenuItem, Order, SavedAddress } from './types';
 import { Bot, ChefHat, Bike } from 'lucide-react';
 
 export const AppContent: React.FC = () => {
+  const { login } = useUser();
   const [currentView, setCurrentView] = useState<string>('home');
   const [selectedBrandId, setSelectedBrandId] = useState<BrandId>('mojo-pizza');
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
@@ -34,7 +35,6 @@ export const AppContent: React.FC = () => {
   const [isAIModalOpen, setIsAIModalOpen] = useState<boolean>(false);
   const [activeAddress, setActiveAddress] = useState<SavedAddress>(MOCK_USER.savedAddresses[0]);
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null);
-  const [user, setUser] = useState<any>(MOCK_USER);
 
   const handleSelectBrand = (brandId: BrandId) => {
     setSelectedBrandId(brandId);
@@ -47,8 +47,8 @@ export const AppContent: React.FC = () => {
   };
 
   const handleAuthSuccess = (loggedUser: any, token: string) => {
-    if (loggedUser) {
-      setUser(loggedUser);
+    if (loggedUser && token) {
+      login(loggedUser, token);
     }
   };
 

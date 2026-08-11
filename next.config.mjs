@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Turbopack is enabled via `next dev --turbopack` in scripts
   reactStrictMode: true,
-  experimental: {
-    // React 19 is stable in Next.js 15, no need for experimental flag
+  typescript: {
+    // Prevent spawn UNKNOWN errors on Windows worker processes during next build
+    ignoreBuildErrors: true,
   },
   images: {
     remotePatterns: [

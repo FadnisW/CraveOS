@@ -30,6 +30,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       const res = await api.requestOtp(email);
       if (res.demoOtp) {
         setDemoCode(res.demoOtp);
+        // Auto-fill the OTP field in dev mode so user doesn't have to type it
+        setOtp(res.demoOtp);
       }
       setStep('OTP');
     } catch (err: any) {
@@ -137,10 +139,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   />
                 </div>
                 {demoCode && (
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 mt-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Demo OTP: <strong>{demoCode}</strong></span>
-                  </p>
+                  <div className="mt-2 p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span className="text-[11px] font-semibold">Dev OTP auto-filled:</span>
+                      <strong className="text-sm tracking-widest font-black">{demoCode}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setOtp(demoCode)}
+                      className="text-[10px] font-extrabold text-emerald-700 dark:text-emerald-300 underline hover:no-underline shrink-0"
+                    >
+                      Re-fill
+                    </button>
+                  </div>
                 )}
               </div>
 

@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const { theme, toggleTheme } = useTheme();
   const { itemCount } = useCart();
-  const { user, isAuthenticated, logout } = useUser();
+  const { user, isAuthenticated, isMounted, logout } = useUser();
 
   return (
     <header className="sticky top-0 z-40 w-full backdrop-blur-md bg-white/85 dark:bg-slate-900/85 border-b border-gray-200/80 dark:border-slate-800/80 transition-colors duration-300">
@@ -120,8 +120,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               Orders
             </button>
 
-            {/* Auth Control: Sign In button or Profile / Logout */}
-            {isAuthenticated ? (
+            {/* Auth Control — only rendered after client hydration to prevent SSR mismatch */}
+            {!isMounted ? (
+              // Stable skeleton that matches SSR output (avoids hydration error)
+              <button className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gray-100 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-800 dark:text-slate-200">
+                <KeyRound className="w-3.5 h-3.5 text-rose-500" />
+                <span>Sign In</span>
+              </button>
+            ) : isAuthenticated ? (
               <div className="hidden sm:flex items-center gap-2">
                 <button
                   onClick={() => onNavigate('profile')}
