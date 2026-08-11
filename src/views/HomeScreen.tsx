@@ -99,6 +99,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const isWednesdayActive = currentDay === 3;
   const isLateNightActive = currentHour >= 23 || currentHour < 3;
 
+  const mindScrollRef = React.useRef<HTMLDivElement>(null);
+
+  const whatsOnYourMindCategories = [
+    { name: 'Pizza', image: '/offer-pizza.png' },
+    { name: 'Rolls', image: '/cat-rolls.png' },
+    { name: 'Biryani', image: '/offer-biryani.png' },
+    { name: 'Sandwich', image: '/cat-sandwich.png' },
+    { name: 'Bowl', image: '/cat-bowl.png' },
+    { name: 'ThinCrust', image: '/cat-thincrust-pizza.png' },
+    { name: 'Chicken Wings', image: '/cat-chicken-wings.png' },
+    { name: 'High Protein', image: '/offer-guilt-free.png' },
+    { name: 'Sweets', image: '/cat-sweets.png' },
+    { name: 'Thali', image: '/offer-meals.png' },
+  ];
+
   const topOffers = [
     {
       id: 'meals-99',
@@ -201,18 +216,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         : 'bg-slate-200 dark:bg-slate-800/80 border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400',
     },
   ];
-
-  const categories = ['All', 'Pizza', 'Biryani', 'Thalis', 'High Protein', 'Rolls', 'Desserts'];
-
-  const filteredItems = selectedCategory === 'All'
-    ? menuItems
-    : menuItems.filter((item) => {
-      if (selectedCategory === 'Pizza') return item.brandId === 'mojo-pizza' || item.brandId === 'leancrust';
-      if (selectedCategory === 'Biryani') return item.brandId === 'zaza-biryani';
-      if (selectedCategory === 'Thalis') return item.brandId === 'box8';
-      if (selectedCategory === 'High Protein') return item.brandId === 'wefit';
-      return item.category.toLowerCase().includes(selectedCategory.toLowerCase());
-    });
 
   const avgOrderVal = 350;
   const memberDiscountPerOrder = avgOrderVal * 0.3;
@@ -324,18 +327,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   if (!offer.isActive) return;
                   if (offer.type === 'category' && offer.categoryName) {
                     setSelectedCategory(offer.categoryName);
-                    const menuEl = document.getElementById('dishes-grid');
-                    if (menuEl) menuEl.scrollIntoView({ behavior: 'smooth' });
                   } else {
                     onNavigate('deals');
                   }
                 }}
                 className={`relative w-28 sm:w-32 h-36 sm:h-40 shrink-0 rounded-2xl p-2.5 flex flex-col justify-between items-center text-center transition-all duration-200 group overflow-hidden ${offer.isActive
-                  ? 'bg-white dark:bg-slate-900 border border-gray-200/90 dark:border-slate-800 shadow-xs hover:shadow-md hover:border-gray-300 dark:hover:border-slate-700 cursor-pointer'
-                  : 'bg-slate-200/90 dark:bg-slate-800/80 border border-slate-300/80 dark:border-slate-700/80 cursor-not-allowed shadow-none'
+                    ? 'bg-white dark:bg-slate-900 border border-gray-200/90 dark:border-slate-800 shadow-xs hover:shadow-md hover:border-gray-300 dark:hover:border-slate-700 cursor-pointer'
+                    : 'bg-slate-200/90 dark:bg-slate-800/80 border border-slate-300/80 dark:border-slate-700/80 cursor-not-allowed shadow-none'
                   }`}
               >
-
 
                 {/* Offer Card Content: Category Cards (Meals, Biryani, Guilt Free, Pizzas) */}
                 {offer.type === 'category' && (
@@ -519,126 +519,59 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       </section>
 
-      {/* DISHES & QUICK ADD GRID */}
-      <section className="space-y-6" id="dishes-grid">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* WHAT'S ON YOUR MIND? CATEGORY CAROUSEL (NO CARD BACKGROUNDS, PURE CUTOUTS) */}
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white">Recommended Dishes For You</h2>
-            <p className="text-xs text-gray-500 dark:text-slate-400">Handpicked bestseller meals across our cloud kitchens</p>
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
+              What's on your mind?
+            </h2>
           </div>
 
-          {/* Category Filter Pills */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-2 sm:pb-0 scrollbar-none">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-4 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all duration-200 ${selectedCategory === cat
-                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/25'
-                  : 'bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-700'
-                  }`}
-              >
-                {cat}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => mindScrollRef.current?.scrollBy({ left: -280, behavior: 'smooth' })}
+              className="w-8 h-8 rounded-full bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 flex items-center justify-center text-gray-700 dark:text-slate-300 transition-colors shadow-xs"
+              aria-label="Scroll Left"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => mindScrollRef.current?.scrollBy({ left: 280, behavior: 'smooth' })}
+              className="w-8 h-8 rounded-full bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 flex items-center justify-center text-gray-700 dark:text-slate-300 transition-colors shadow-xs"
+              aria-label="Scroll Right"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
-        {/* Item Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredItems.map((item) => {
-            const isAdded = cartItems.some((ci) => ci.item.id === item.id);
-            return (
-              <SpotlightCard
-                key={item.id}
-                spotlightColor="rgba(225, 29, 72, 0.12)"
-                className="flex flex-col overflow-hidden rounded-2xl transition-all duration-200 group border border-gray-200/80 dark:border-slate-800"
-              >
-                {/* Full-width food banner image */}
-                <div className="relative w-full h-44 overflow-hidden bg-gray-100 dark:bg-slate-800">
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
-
-                  {/* Veg / Non-Veg Indicator */}
-                  <div className={`absolute top-3 left-3 w-4 h-4 rounded-sm flex items-center justify-center border bg-white/90 backdrop-blur-sm shadow-sm ${item.isVeg ? 'border-emerald-600' : 'border-rose-600'
-                    }`}>
-                    <div className={`w-2 h-2 rounded-full ${item.isVeg ? 'bg-emerald-600' : 'bg-rose-600'}`} />
-                  </div>
-
-                  {/* Rating Badge */}
-                  <div className="absolute top-3 right-3 px-2 py-1 rounded-md bg-black/60 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1">
-                    <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
-                    <span>{item.rating}</span>
-                  </div>
-                </div>
-
-                {/* Card Body */}
-                <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
-                  <div className="space-y-1.5">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">
-                      {item.brandId.toUpperCase()}
-                    </span>
-                    <h3 className="font-extrabold text-base text-gray-900 dark:text-white line-clamp-1 group-hover:text-rose-600 transition-colors">
-                      {item.name}
-                    </h3>
-                    <p className="text-xs text-gray-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
-                      {item.description}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-slate-800/80">
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-lg font-black text-gray-900 dark:text-white">
-                          ₹{item.memberPrice}
-                        </span>
-                        <span className="text-xs text-gray-400 line-through">
-                          ₹{item.mrp}
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                        Member Price
-                      </span>
-                    </div>
-
-                    {item.customizationGroups && item.customizationGroups.length > 0 ? (
-                      <button
-                        onClick={() => onOpenItemModal(item)}
-                        className="px-4 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800 text-xs font-extrabold transition-all"
-                      >
-                        Customize +
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => addToCart(item)}
-                        className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all ${isAdded
-                          ? 'bg-emerald-600 text-white shadow-sm'
-                          : 'bg-rose-600 text-white hover:bg-rose-700 shadow-md shadow-rose-600/20'
-                          }`}
-                      >
-                        {isAdded ? (
-                          <>
-                            <Check className="w-3.5 h-3.5" /> Added
-                          </>
-                        ) : (
-                          <>
-                            <Plus className="w-3.5 h-3.5" /> ADD
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </SpotlightCard>
-            );
-          })}
+        <div
+          ref={mindScrollRef}
+          className="flex items-center gap-6 sm:gap-8 overflow-x-auto pb-3 pt-1 px-1 scrollbar-none scroll-smooth"
+        >
+          {whatsOnYourMindCategories.map((cat) => (
+            <motion.div
+              key={cat.name}
+              whileHover={{ y: -3, scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setSelectedCategory(cat.name)}
+              className="flex flex-col items-center shrink-0 cursor-pointer group"
+            >
+              <div className="w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center p-1 bg-transparent">
+                <img
+                  src={cat.image}
+                  alt={cat.name}
+                  className="w-full h-full object-contain group-hover:scale-108 transition-transform duration-300 filter drop-shadow-sm"
+                />
+              </div>
+              <span className="mt-2 text-xs sm:text-sm font-semibold text-gray-600 dark:text-slate-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors text-center whitespace-nowrap">
+                {cat.name}
+              </span>
+            </motion.div>
+          ))}
         </div>
       </section>
-
     </div>
   );
 };
