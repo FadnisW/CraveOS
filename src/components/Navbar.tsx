@@ -76,14 +76,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </div>
 
-          {/* Search Bar Shortcut */}
-          <div className="hidden lg:flex flex-1 max-w-md mx-4">
+          {/* Search Bar — slim pill style */}
+          <div className="hidden lg:flex flex-1 max-w-sm mx-6">
             <button
               onClick={() => onNavigate('search')}
-              className="w-full flex items-center gap-3 px-4 py-2 rounded-xl bg-gray-100/90 dark:bg-slate-800/90 text-gray-400 dark:text-slate-500 hover:bg-gray-200/70 dark:hover:bg-slate-700/70 border border-gray-200/60 dark:border-slate-700/60 text-sm transition-all text-left"
+              className="group w-full flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-gray-100/70 dark:bg-slate-800/60 hover:bg-gray-100 dark:hover:bg-slate-800 border border-gray-200/50 dark:border-slate-700/40 hover:border-gray-300/60 dark:hover:border-slate-600/60 text-left transition-all duration-200 shadow-sm"
             >
-              <Search className="w-4 h-4 text-gray-400" />
-              <span>Search MOJO Pizza, BOX8 Thalis, Biryani...</span>
+              <Search className="w-3.5 h-3.5 text-gray-400 dark:text-slate-500 shrink-0" />
+              <span className="flex-1 text-[13px] text-gray-400 dark:text-slate-500 font-normal truncate">
+                Search dishes, brands…
+              </span>
+              <kbd className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 text-[10px] font-medium text-gray-400 dark:text-slate-400 shadow-sm">
+                ⌘K
+              </kbd>
             </button>
           </div>
 

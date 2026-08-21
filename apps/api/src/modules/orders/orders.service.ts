@@ -1,14 +1,20 @@
-import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, NotFoundException, Logger, Inject } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { PricingService } from '../pricing/pricing.service';
+import { Queue } from 'bullmq';
+import { KITCHEN_QUEUE } from '../queue/queue.constants';
 
 export interface CreateOrderDto {
   userId: string;
   hubId: string;
   addressId: string;
+  couponCode?: string;
+  useWalletBalance?: number;
   items: {
     menuItemId: string;
     brandId: string;
     nameSnapshot: string;
+    mrp?: number;
     price: number;
     quantity: number;
   }[];
@@ -18,14 +24,44 @@ export interface CreateOrderDto {
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pricingService: PricingService,
+    @Inject(KITCHEN_QUEUE) private readonly kitchenQueue: Queue,
+  ) {}
 
   async createOrder(dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('Cannot create order with an empty cart');
     }
 
-    const mrpTotalPaise = dto.items.reduce((sum, item) => sum + item.price * 100 * item.quantity, 0);
+    // Check if user is EatClub Member
+    const user = await this.prisma.user.findUnique({
+      where: { id: dto.userId },
+      include: { membership: true },
+    });
+    const isMember = user?.membership?.status === 'ACTIVE' || user?.membership?.status === 'TRIAL' || true; // Default member benefits in EatClub app
+
+    // Compute deterministic pricing using PricingService
+    // Map items to calculateCartPrice input (using MRP if provided, else price * 1.3)
+    const pricingInput = {
+      items: dto.items.map((i) => ({
+        price: i.mrp || Math.round(i.price * 1.3),
+        quantity: i.quantity,
+      })),
+      isMember,
+      couponCode: dto.couponCode,
+      useWalletBalance: dto.useWalletBalance,
+    };
+
+    const priceBreakdown = await this.pricingService.calculateCartPrice(pricingInput);
+
+    const mrpTotalPaise = Math.round(priceBreakdown.itemTotal * 100);
+    const memberSavingsPaise = Math.round(priceBreakdown.memberDiscount * 100);
+    const deliveryFeePaise = Math.round(priceBreakdown.deliveryFee * 100);
+    const packagingFeePaise = Math.round(priceBreakdown.packagingFee * 100);
+    const taxPaise = Math.round(priceBreakdown.taxes * 100);
+    const finalPaidPaise = Math.round(priceBreakdown.finalPayable * 100);
 
     // Group cart items by brandId for Multi-Brand Fan-Out
     const itemsByBrand = new Map<string, typeof dto.items>();
@@ -35,20 +71,32 @@ export class OrdersService {
       itemsByBrand.set(item.brandId, existing);
     }
 
-    this.logger.log(`🚀 Creating order fanning out across ${itemsByBrand.size} brand kitchen tickets.`);
+    this.logger.log(`🚀 Creating order fanning out across ${itemsByBrand.size} brand kitchen tickets. Final Payable: ₹${priceBreakdown.finalPayable}`);
 
     // Execute atomic transaction for parent Order + N BrandOrders
-    return this.prisma.$transaction(async (tx) => {
-      // 0. Stock Re-Validation (86 Check): verify all items are available
+    const createdOrder = await this.prisma.$transaction(async (tx) => {
+      // 0. Stock Re-Validation (86 Check) and Cross-Hub Kitchen Validation
       const itemIds = dto.items.map((i) => i.menuItemId);
       const dbItems = await tx.menuItem.findMany({
         where: { id: { in: itemIds } },
+        include: {
+          brandKitchen: true,
+        },
       });
 
       for (const cartItem of dto.items) {
         const dbItem = dbItems.find((i) => i.id === cartItem.menuItemId);
-        if (dbItem && !dbItem.isAvailable) {
-          throw new BadRequestException(`Item '${cartItem.nameSnapshot}' is currently out of stock (86'd).`);
+        if (!dbItem) {
+          throw new BadRequestException(`Item '${cartItem.nameSnapshot}' was not found.`);
+        }
+        if (!dbItem.isAvailable) {
+          throw new ConflictException(`Item '${cartItem.nameSnapshot}' is currently out of stock (86'd).`);
+        }
+        // Verify item belongs to a kitchen in the designated hub
+        if (dbItem.brandKitchen && dbItem.brandKitchen.hubId !== dto.hubId) {
+          throw new BadRequestException(
+            `Cross-Hub Conflict: Item '${cartItem.nameSnapshot}' is from hub '${dbItem.brandKitchen.hubId}', but order is pinned to hub '${dto.hubId}'.`,
+          );
         }
       }
 
@@ -59,12 +107,12 @@ export class OrdersService {
           hubId: dto.hubId,
           addressId: dto.addressId,
           mrpTotalPaise,
-          memberSavingsPaise: Math.round(mrpTotalPaise * 0.3),
-          deliveryFeePaise: 0,
-          packagingFeePaise: 0,
-          taxPaise: Math.round(mrpTotalPaise * 0.05),
-          finalPaidPaise: Math.round(mrpTotalPaise * 0.75),
-          discountBreakdown: { membership: '30%', delivery: 'FREE' },
+          memberSavingsPaise,
+          deliveryFeePaise,
+          packagingFeePaise,
+          taxPaise,
+          finalPaidPaise,
+          discountBreakdown: priceBreakdown.savingsSummary,
           status: 'PLACED',
         },
       });
@@ -95,7 +143,9 @@ export class OrdersService {
           actorId: dto.userId,
           recordId: parentOrder.id,
           diff: {
-            totalPaise: Math.round(mrpTotalPaise * 0.75),
+            finalPaidPaise,
+            mrpTotalPaise,
+            memberSavingsPaise,
             brandCount: itemsByBrand.size,
           },
         },
@@ -114,6 +164,24 @@ export class OrdersService {
         },
       });
     });
+
+    // Post-transaction: Enqueue BullMQ jobs for asynchronous kitchen notifications
+    if (createdOrder && createdOrder.brandOrders) {
+      for (const brandOrder of createdOrder.brandOrders) {
+        try {
+          await this.kitchenQueue.add('brand_order.created', {
+            hubId: dto.hubId,
+            orderId: createdOrder.id,
+            brandOrder,
+          });
+          this.logger.log(`🐂 Enqueued BullMQ job 'brand_order.created' for ticket ${brandOrder.id}`);
+        } catch (queueErr: any) {
+          this.logger.warn(`Failed to enqueue BullMQ job: ${queueErr.message}`);
+        }
+      }
+    }
+
+    return createdOrder;
   }
 
   async getOrderById(orderId: string) {

@@ -14,12 +14,14 @@ interface HomeScreenProps {
   onSelectBrand: (brandId: BrandId) => void;
   onOpenItemModal: (item: MenuItem) => void;
   onNavigate: (view: string) => void;
+  onSelectCategory?: (category: string) => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   onSelectBrand,
   onOpenItemModal,
   onNavigate,
+  onSelectCategory,
 }) => {
   const { addToCart, cartItems } = useCart();
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -47,20 +49,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         ]);
 
         if (apiBrands && Array.isArray(apiBrands) && apiBrands.length > 0) {
-          const mappedBrands: Brand[] = apiBrands.map((b: any) => ({
-            id: b.slug || b.id,
-            name: b.name,
-            tagline: b.cuisine?.join(', ') || 'Desi Meals & Specialties',
-            logo: b.logoUrl || MOCK_BRANDS[0].logo,
-            heroImage: b.logoUrl || MOCK_BRANDS[0].heroImage,
-            themeColor: '#E11D48',
-            rating: 4.6,
-            totalRatings: 12000,
-            deliveryTimeMins: 22,
-            minOrderValue: 149,
-            categories: b.cuisine || ['Popular'],
-            isAvailable: b.isActive ?? true,
-          }));
+          const mappedBrands: Brand[] = apiBrands.map((b: any) => {
+            const fallback = MOCK_BRANDS.find((mb) => mb.id === b.slug || mb.id === b.id) || MOCK_BRANDS[0];
+            return {
+              id: b.slug || b.id,
+              name: b.name,
+              tagline: b.tagline || b.cuisine?.join(', ') || fallback.tagline,
+              logo: b.logoUrl || fallback.logo,
+              heroImage: b.heroImageUrl || fallback.heroImage,
+              themeColor: fallback.themeColor || '#E11D48',
+              rating: fallback.rating || 4.5,
+              totalRatings: fallback.totalRatings || 2500,
+              deliveryTimeMins: fallback.deliveryTimeMins || 20,
+              minOrderValue: b.minOrderValue || fallback.minOrderValue || 149,
+              categories: b.cuisine || fallback.categories,
+              isAvailable: b.isActive ?? true,
+            };
+          });
           setBrands(mappedBrands);
         }
 
@@ -68,6 +73,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           const mappedItems: MenuItem[] = apiItems.map((i: any) => ({
             id: i.id,
             brandId: i.brandKitchen?.brand?.slug || 'box8',
+            availableHubIds: (i.brandKitchen?.brand?.brandKitchens ?? []).map((bk: { hubId: string }) => bk.hubId).filter(Boolean),
             name: i.name,
             description: i.description || i.name,
             mrp: Math.round((i.priceInPaise || 30000) / 100 * 1.3),
@@ -326,7 +332,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 onClick={() => {
                   if (!offer.isActive) return;
                   if (offer.type === 'category' && offer.categoryName) {
-                    setSelectedCategory(offer.categoryName);
+                    if (onSelectCategory) onSelectCategory(offer.categoryName);
+                    else onNavigate('menu');
                   } else {
                     onNavigate('deals');
                   }
@@ -555,7 +562,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               key={cat.name}
               whileHover={{ y: -3, scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => setSelectedCategory(cat.name)}
+              onClick={() => {
+                if (onSelectCategory) onSelectCategory(cat.name);
+                else onNavigate('menu');
+              }}
               className="flex flex-col items-center shrink-0 cursor-pointer group"
             >
               <div className="w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center p-1 bg-transparent">
@@ -571,6 +581,113 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </motion.div>
           ))}
         </div>
+      </section>
+      {/* RESTAURANTS GRID SECTION */}
+      <section className="space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
+              Restaurants
+            </h2>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="rounded-2xl bg-gray-100 dark:bg-slate-800 animate-pulse overflow-hidden">
+                <div className="h-44 bg-gray-200 dark:bg-slate-700" />
+                <div className="p-4 space-y-2">
+                  <div className="h-4 bg-gray-200 dark:bg-slate-700 rounded w-3/4" />
+                  <div className="h-3 bg-gray-200 dark:bg-slate-700 rounded w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {brands.map((brand) => (
+              <motion.div
+                key={brand.id}
+                whileHover={{ y: -4, scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ type: 'spring', stiffness: 380, damping: 22 }}
+                onClick={() => onSelectBrand(brand.id)}
+                className={`group cursor-pointer rounded-2xl overflow-hidden border border-gray-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm hover:shadow-xl hover:shadow-gray-200/60 dark:hover:shadow-slate-900/60 transition-shadow duration-300 ${
+                  !brand.isAvailable ? 'opacity-60 grayscale pointer-events-none' : ''
+                }`}
+              >
+                {/* Hero Image */}
+                <div className="relative w-full h-44 overflow-hidden bg-gray-100 dark:bg-slate-800">
+                  <img
+                    src={brand.heroImage}
+                    alt={brand.name}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  />
+
+                  {/* Dark gradient overlay at bottom */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-transparent" />
+
+                  {/* Delivery time badge (bottom-left) */}
+                  <div className="absolute bottom-3 left-3 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 backdrop-blur-md text-white text-xs font-bold">
+                    <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                    <span>{brand.deliveryTimeMins} mins</span>
+                  </div>
+
+                  {/* Brand Logo / Badge (bottom-right circular) */}
+                  <div className="absolute bottom-2.5 right-3 w-12 h-12 rounded-full overflow-hidden border-2 border-white bg-white p-0.5 shadow-md flex items-center justify-center">
+                    <img
+                      src={brand.logo}
+                      alt={`${brand.name} logo`}
+                      className="w-full h-full object-contain rounded-full"
+                    />
+                  </div>
+
+                  {/* Unavailable Overlay */}
+                  {!brand.isAvailable && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                      <span className="px-3 py-1 rounded-full bg-slate-900/80 text-amber-300 text-xs font-black border border-amber-400/30">
+                        Currently Unavailable
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Card Body */}
+                <div className="px-4 pt-3 pb-0">
+                  {/* Name + Rating Row */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-extrabold text-base text-gray-900 dark:text-white leading-tight group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors line-clamp-1">
+                        {brand.name}
+                      </h3>
+                      <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5 line-clamp-1">
+                        {brand.tagline}
+                      </p>
+                    </div>
+
+                    {/* Star Rating Badge */}
+                    <div className="flex-shrink-0 flex flex-col items-end gap-0.5">
+                      <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs font-black shadow-sm">
+                        <Star className="w-3 h-3 fill-white" />
+                        <span>{brand.rating.toFixed(1)}</span>
+                      </div>
+                      <span className="text-[10px] text-gray-400 dark:text-slate-500 whitespace-nowrap">
+                        By {(brand.totalRatings / 1000).toFixed(1)}k+
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ₹0 Fees Strip */}
+                <div className="mx-4 mt-3 mb-4 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 border-t border-gray-100 dark:border-slate-800 pt-2.5">
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>₹0 Delivery, ₹0 Packaging, ₹0 Platform Fees.</span>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

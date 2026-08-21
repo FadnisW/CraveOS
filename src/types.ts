@@ -6,7 +6,9 @@ export type BrandId =
   | 'wefit' 
   | 'mealful-rolls' 
   | 'nh1-bowls' 
-  | 'itminaan-biryani';
+  | 'zulus-pizza'
+  | 'itminaan-biryani'
+  | string;
 
 export interface Brand {
   id: BrandId;
@@ -41,6 +43,7 @@ export interface CustomizationGroup {
 export interface MenuItem {
   id: string;
   brandId: BrandId;
+  availableHubIds: string[]; // Hubs (cloud kitchens) that can fulfill this item
   name: string;
   description: string;
   mrp: number; // Regular Maximum Retail Price

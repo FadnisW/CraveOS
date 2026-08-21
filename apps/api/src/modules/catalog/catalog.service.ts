@@ -49,7 +49,16 @@ export class CatalogService {
       include: {
         brandKitchen: {
           include: {
-            brand: true,
+            brand: {
+              include: {
+                // Include ALL kitchens of the same brand so the frontend
+                // can derive availableHubIds[] (all hubs this brand serves)
+                brandKitchens: {
+                  where: { isOpen: true },
+                  select: { hubId: true },
+                },
+              },
+            },
           },
         },
       },
@@ -72,7 +81,14 @@ export class CatalogService {
       include: {
         brandKitchen: {
           include: {
-            brand: true,
+            brand: {
+              include: {
+                brandKitchens: {
+                  where: { isOpen: true },
+                  select: { hubId: true },
+                },
+              },
+            },
           },
         },
       },

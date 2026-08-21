@@ -32,10 +32,12 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     taxes,
     finalTotal,
     clearCart,
+    pinnedHubId,
   } = useCart();
 
   const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CARD' | 'WALLET' | 'COD'>('UPI');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const handlePlaceOrder = async () => {
     // Identity Gate: Check if user is logged in
@@ -45,26 +47,40 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     }
 
     setIsProcessing(true);
+    setCheckoutError(null);
 
     try {
       // Build DTO for NestJS Order Orchestrator
       const orderPayload = {
         userId: user?.id || MOCK_USER.id,
-        hubId: activeAddress.resolvedHubId || 'hub-hsr-01',
+        hubId: pinnedHubId || activeAddress.resolvedHubId || 'hub-hsr-01',
         addressId: activeAddress.id,
         items: cartItems.map((ci) => ({
           menuItemId: ci.item.id,
           brandId: ci.item.brandId,
           nameSnapshot: ci.item.name,
+          mrp: ci.item.mrp,
           price: ci.item.memberPrice,
           quantity: ci.quantity,
         })),
+        couponCode: appliedCoupon?.code,
       };
 
-      const createdOrder = await api.createOrder(orderPayload).catch((err: any) => {
-        console.warn('Backend API order creation failed or offline. Falling back to optimistic client order:', err);
-        return null;
-      });
+      let createdOrder: any = null;
+      try {
+        createdOrder = await api.createOrder(orderPayload);
+      } catch (err: any) {
+        console.error('Backend API order creation failed:', err);
+        const status = err?.status || err?.response?.status;
+        const msg = err?.message || '';
+        if (status === 409 || msg.includes('409') || msg.toLowerCase().includes('out of stock') || msg.includes("86'd")) {
+          setCheckoutError('An item in your cart is currently out of stock. Please remove it to continue.');
+        } else {
+          setCheckoutError(msg || 'Failed to place order. Please try again.');
+        }
+        setIsProcessing(false);
+        return;
+      }
 
       // If payment method is digital (UPI or CARD), initiate Razorpay order workflow
       if (paymentMethod === 'UPI' || paymentMethod === 'CARD') {
@@ -285,6 +301,12 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                 <span className="text-rose-600 dark:text-rose-400">₹{finalTotal}</span>
               </div>
             </div>
+
+            {checkoutError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-xs font-bold dark:bg-rose-950/40 dark:border-rose-900 dark:text-rose-300">
+                {checkoutError}
+              </div>
+            )}
 
             <button
               onClick={handlePlaceOrder}

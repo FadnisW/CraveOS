@@ -11,6 +11,8 @@ import { ItemModal } from './components/ItemModal';
 import { SavedAddressModal } from './components/SavedAddressModal';
 import { AuthModal } from './components/AuthModal';
 import { AICraveAssistantModal } from './components/AICraveAssistantModal';
+import { HubConflictModal } from './components/HubConflictModal';
+import { Footer } from './components/Footer';
 import { HomeScreen } from './views/HomeScreen';
 import { RestaurantView } from './views/RestaurantView';
 import { CheckoutScreen } from './views/CheckoutScreen';
@@ -18,6 +20,7 @@ import { OrdersScreen } from './views/OrdersScreen';
 import { ProfileScreen } from './views/ProfileScreen';
 import { DealsScreen } from './views/DealsScreen';
 import { SearchScreen } from './views/SearchScreen';
+import { MenuScreen } from './views/MenuScreen';
 import { AdminKDSView } from './views/AdminKDSView';
 import { AdminDispatchView } from './views/AdminDispatchView';
 import { MOCK_USER } from './data/mockData';
@@ -27,7 +30,8 @@ import { Bot, ChefHat, Bike } from 'lucide-react';
 export const AppContent: React.FC = () => {
   const { login } = useUser();
   const [currentView, setCurrentView] = useState<string>('home');
-  const [selectedBrandId, setSelectedBrandId] = useState<BrandId>('mojo-pizza');
+  const [selectedBrandId, setSelectedBrandId] = useState<BrandId | null>(null);
+  const [selectedMenuCategory, setSelectedMenuCategory] = useState<string>('Pizza');
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
   const [isAddressModalOpen, setIsAddressModalOpen] = useState<boolean>(false);
@@ -38,7 +42,8 @@ export const AppContent: React.FC = () => {
 
   const handleSelectBrand = (brandId: BrandId) => {
     setSelectedBrandId(brandId);
-    setCurrentView('brand');
+    setSelectedMenuCategory('');
+    setCurrentView('menu');
   };
 
   const handleOrderPlaced = (order: Order) => {
@@ -102,13 +107,30 @@ export const AppContent: React.FC = () => {
             onSelectBrand={handleSelectBrand}
             onOpenItemModal={setCustomizingItem}
             onNavigate={setCurrentView}
+            onSelectCategory={(category) => {
+              setSelectedBrandId(null);
+              setSelectedMenuCategory(category);
+              setCurrentView('menu');
+            }}
           />
         )}
 
         {currentView === 'brand' && (
           <RestaurantView
-            brandId={selectedBrandId}
+            brandId={selectedBrandId || 'mojo-pizza'}
             onBack={() => setCurrentView('home')}
+            onOpenItemModal={setCustomizingItem}
+          />
+        )}
+
+        {currentView === 'menu' && (
+          <MenuScreen
+            initialCategory={selectedMenuCategory}
+            initialBrandId={selectedBrandId}
+            onBack={() => {
+              setSelectedBrandId(null);
+              setCurrentView('home');
+            }}
             onOpenItemModal={setCustomizingItem}
           />
         )}
@@ -156,6 +178,11 @@ export const AppContent: React.FC = () => {
           <AdminDispatchView onBackToStorefront={() => setCurrentView('home')} />
         )}
       </main>
+
+      {/* Global Application Footer */}
+      {currentView !== 'admin-kds' && currentView !== 'admin-dispatch' && (
+        <Footer onNavigate={setCurrentView} />
+      )}
 
       {/* Floating AI Crave Assistant Trigger Button */}
       <button
@@ -206,6 +233,9 @@ export const AppContent: React.FC = () => {
         isOpen={isAIModalOpen}
         onClose={() => setIsAIModalOpen(false)}
       />
+
+      {/* Cross-Hub Cart Conflict Modal */}
+      <HubConflictModal />
     </div>
   );
 };

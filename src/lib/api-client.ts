@@ -22,7 +22,10 @@ export async function apiRequest<T = any>(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `API Request failed with status ${response.status}`);
+    const err: any = new Error(errorData.message || `API Request failed with status ${response.status}`);
+    err.status = response.status;
+    err.errorData = errorData;
+    throw err;
   }
 
   return response.json();

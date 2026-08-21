@@ -37,7 +37,7 @@ export const RestaurantView: React.FC<RestaurantViewProps> = ({
             name: apiBrand.name,
             tagline: apiBrand.cuisine?.join(', ') || 'Desi Meals & Specialties',
             logo: apiBrand.logoUrl || MOCK_BRANDS[0].logo,
-            heroImage: apiBrand.logoUrl || MOCK_BRANDS[0].heroImage,
+            heroImage: apiBrand.heroImageUrl || MOCK_BRANDS[0].heroImage,
             themeColor: '#E11D48',
             rating: 4.7,
             totalRatings: 18000,
@@ -52,6 +52,7 @@ export const RestaurantView: React.FC<RestaurantViewProps> = ({
           const mappedItems: MenuItem[] = apiItems.map((i: any) => ({
             id: i.id,
             brandId: i.brandKitchen?.brand?.slug || brandId,
+            availableHubIds: (i.brandKitchen?.brand?.brandKitchens ?? []).map((bk: { hubId: string }) => bk.hubId).filter(Boolean),
             name: i.name,
             description: i.description || i.name,
             mrp: Math.round((i.priceInPaise || 30000) / 100 * 1.3),
