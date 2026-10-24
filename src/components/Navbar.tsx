@@ -31,10 +31,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="sticky top-0 z-40 w-full backdrop-blur-md bg-white/85 dark:bg-slate-900/85 border-b border-gray-200/80 dark:border-slate-800/80 transition-colors duration-300">
       {/* Top Eatclub Member Savings Ticker */}
-      <div className="bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white text-xs font-semibold py-1 px-4 text-center flex items-center justify-center gap-2">
-        <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-        <span>Eatclub Member Benefits: <strong>FLAT 30% OFF</strong> + <strong>₹0 Delivery Fee</strong> + <strong>₹0 Packaging Fee</strong> on every order!</span>
-      </div>
+      <button 
+        onClick={() => onNavigate('membership')}
+        className="w-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white text-xs font-semibold py-1 px-4 text-center flex items-center justify-center gap-2 hover:opacity-95 transition-opacity cursor-pointer"
+      >
+        <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
+        <span>Eatclub Member Benefits: <strong>FLAT 30% OFF</strong> + <strong>₹0 Delivery Fee</strong> + <strong>₹0 Packaging Fee</strong> on every order! <span className="underline font-bold ml-1">View Savings Calculator &rarr;</span></span>
+      </button>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 gap-4">

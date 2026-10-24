@@ -102,6 +102,8 @@ export const MenuScreen: React.FC<MenuScreenProps> = ({
               minOrderValue: b.minOrderValue || 149,
               categories: b.cuisine || ['Popular'],
               isAvailable: b.isActive ?? true,
+              isOwned: b.isOwned ?? fallback.isOwned ?? true,
+              commissionPct: b.commissionPct ?? fallback.commissionPct,
             };
           });
           setBrands(mappedBrands);

@@ -14,6 +14,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 199,
     categories: ['Popular Pizzas', 'Handcrafted Crusts', 'Sides & Garlic Bread', 'Desserts', 'Beverages'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'leancrust',
@@ -28,6 +29,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 229,
     categories: ['Gourmet Thin Crust', 'Cheesy Garlic Breads', 'Salads', 'Drinks'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'box8',
@@ -42,6 +44,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 149,
     categories: ['All-in-1 Meals', 'Thalis', 'Curries', 'Biryanis', 'Desserts', 'Drinks'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'wefit',
@@ -56,6 +59,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 169,
     categories: ['Protein Bowls', 'Keto Meals', 'Fresh Salads', 'Cold Pressed Juices'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'zaza-biryani',
@@ -70,6 +74,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 179,
     categories: ['Royal Biryanis', 'Kebabs & Starters', 'Raitas & Gravy', 'Desserts'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'nh1-bowls',
@@ -84,6 +89,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 139,
     categories: ['Rajma & Chole Bowls', 'Paneer Bowls', 'Chicken Bowls', 'Lassi & Beverages'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'mealful-rolls',
@@ -98,6 +104,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 129,
     categories: ['Signature Rolls', 'Classic Kathi Rolls', 'Sides', 'Beverages'],
     isAvailable: true,
+    isOwned: true,
   },
   {
     id: 'zulus-pizza',
@@ -112,6 +119,7 @@ export const MOCK_BRANDS: Brand[] = [
     minOrderValue: 199,
     categories: ['Wholesale Pizzas', 'Jumbo Crusts', 'Cheesy Sides'],
     isAvailable: true,
+    isOwned: true,
   },
 ];
 

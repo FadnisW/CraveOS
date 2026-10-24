@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -26,6 +26,13 @@ export class AuthService {
     return `otp:${email}`;
   }
 
+  /** The dev OTP bypass needs an explicit second opt-in, not just NODE_ENV. */
+  private isDevOtpBypassEnabled() {
+    return (
+      process.env.NODE_ENV === 'development' && process.env.DEV_OTP_BYPASS === 'true'
+    );
+  }
+
   async requestOtp(email: string) {
     const cleanEmail = email.trim().toLowerCase();
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -43,15 +50,15 @@ export class AuthService {
       success: true,
       message: `OTP sent to ${cleanEmail}`,
       // Return OTP in dev mode so the frontend can show it without email
-      demoOtp: process.env.NODE_ENV === 'development' ? code : undefined,
+      demoOtp: this.isDevOtpBypassEnabled() ? code : undefined,
     };
   }
 
   async verifyOtp(email: string, code: string) {
     const cleanEmail = email.trim().toLowerCase();
 
-    // Dev magic bypass — always works in development
-    if (process.env.NODE_ENV === 'development' && code === '123456') {
+    // Dev magic bypass — requires BOTH a development environment and an explicit opt-in.
+    if (this.isDevOtpBypassEnabled() && code === '123456') {
       this.logger.log(`🔓 Dev bypass used for ${cleanEmail}`);
       return this.upsertUserAndSign(cleanEmail);
     }
@@ -82,30 +89,65 @@ export class AuthService {
       include: { membership: true, addresses: true },
     });
 
-    if (!user) {
-      user = await this.prisma.user.create({
-        data: {
-          email,
-          name: email.split('@')[0],
-          phone: `+91${Math.floor(6000000000 + Math.random() * 3999999999)}`,
-          referralCode: `REF-${Math.floor(100000 + Math.random() * 900000)}`,
-        },
-        include: { membership: true, addresses: true },
-      });
-
-      // ₹100 welcome bonus wallet credit
-      await this.prisma.walletTransaction.create({
-        data: {
-          userId: user.id,
-          amountInPaise: 10000,
-          reason: 'WELCOME_BONUS',
-        },
-      });
-
-      this.logger.log(`👤 New user created: ${email}`);
+    if (user?.isBlocked) {
+      throw new ForbiddenException('This account has been blocked. Contact support.');
     }
 
-    const payload = { sub: user.id, email: user.email };
+    if (!user) {
+      const WELCOME_BONUS_PAISE = 10000; // ₹100
+
+      // Create the user and the bonus ledger entry together, and seed the balance
+      // in the same write. Previously the ledger got a ₹100 row while
+      // User.walletBalance stayed at 0, so Profile and Checkout disagreed.
+      user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            name: email.split('@')[0],
+            phone: `+91${Math.floor(6000000000 + Math.random() * 3999999999)}`,
+            referralCode: `REF-${Math.floor(100000 + Math.random() * 900000)}`,
+            walletBalance: WELCOME_BONUS_PAISE,
+          },
+          include: { membership: true, addresses: true },
+        });
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: created.id,
+            amountInPaise: WELCOME_BONUS_PAISE,
+            reason: 'WELCOME_BONUS',
+          },
+        });
+
+        return created;
+      });
+
+      // SDD §7.2: Auto-enroll new users in a 30-day Free Trial membership.
+      const trialPlan = await this.prisma.membershipPlan.findFirst({
+        where: { name: { contains: 'Trial' } },
+      });
+      const planId = trialPlan?.id || 'STANDARD_TRIAL';
+
+      await this.prisma.membership.create({
+        data: {
+          userId: user.id,
+          planId,
+          status: 'TRIAL',
+          trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        },
+      });
+
+      this.logger.log(`👤 New user created: ${email} — 30-day Free Trial membership activated`);
+    }
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role || 'CUSTOMER',
+      adminSubRole: user.adminSubRole || null,
+      scopedHubId: user.scopedHubId || null,
+      scopedBrandId: user.scopedBrandId || null,
+    };
     const accessToken = this.jwtService.sign(payload);
 
     return { accessToken, user };

@@ -44,8 +44,36 @@ enum MembershipStatus {
 enum TripStatus {
   UNASSIGNED
   ASSIGNED
+  ACCEPTED
+  ARRIVED_AT_HUB
   PICKED_UP
+  ARRIVING
   DELIVERED
+  STALE
+  CANCELLED
+}
+
+enum AdminSubRole {
+  SUPER_ADMIN
+  OPERATIONS_ADMIN
+  FINANCE_ADMIN
+  SUPPORT_ADMIN
+  MARKETING_ADMIN
+}
+
+enum RiderStatus {
+  PENDING_APPROVAL
+  APPROVED
+  SUSPENDED
+  REJECTED
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
 }
 
 enum AddressType {
@@ -59,7 +87,12 @@ model User {
   phone             String              @unique
   email             String?             @unique
   name              String?
+  role              String              @default("CUSTOMER") // CUSTOMER / HUB_STAFF / HUB_MANAGER / BRAND_OPS / RIDER / ADMIN
+  adminSubRole      AdminSubRole?
+  scopedHubId       String?
+  scopedBrandId     String?
   walletBalance     Int                 @default(0) // paise (e.g. 25000 = ₹250.00)
+  isBlocked         Boolean             @default(false) // set by admin block; never overloads `role`
   membership        Membership?
   addresses         Address[]
   orders            Order[]
@@ -102,6 +135,8 @@ model Brand {
   heroImageUrl   String
   themeColor     String         // Hex color accent
   isActive       Boolean        @default(true)
+  isOwned        Boolean        @default(true) // SDD §7.1: First-party vs 3rd party/franchise
+  commissionPct  Float?                        // Optional commission percentage for 3rd party brands
   minOrderValue  Int            @default(149) // paise
   brandKitchens  BrandKitchen[]
 
@@ -109,14 +144,17 @@ model Brand {
 }
 
 model Hub {
-  id             String         @id @default(cuid())
-  name           String         // "HSR Layout Hub #01"
-  city           String
-  lat            Float
-  lng            Float
-  servicePolygon Json           // GeoJSON polygon
-  brandKitchens  BrandKitchen[]
-  orders         Order[]
+  id                  String         @id @default(cuid())
+  name                String         // "HSR Layout Hub #01"
+  city                String
+  lat                 Float
+  lng                 Float
+  servicePolygon      Json           // GeoJSON polygon
+  operatingHoursStart String?        // "HH:mm"
+  operatingHoursEnd   String?        // "HH:mm"
+  brandKitchens       BrandKitchen[]
+  orders              Order[]
+  riders              Rider[]
 
   @@map("hubs")
 }
@@ -135,19 +173,26 @@ model BrandKitchen {
 }
 
 model MenuItem {
-  id             String       @id @default(cuid())
-  brandKitchenId String
-  name           String
-  description    String
-  mrpInPaise     Int          // Max Retail Price
-  memberPriceInPaise Int      // Discounted Eatclub Member Price
-  imageUrl       String
-  isVeg          Boolean      @default(true)
-  isBestseller   Boolean      @default(false)
-  isAvailable    Boolean      @default(true) // Hub-level 86'd out-of-stock flag
-  category       String
-  rating         Float        @default(4.5)
-  brandKitchen   BrandKitchen @relation(fields: [brandKitchenId], references: [id], onDelete: Cascade)
+  id                 String       @id @default(cuid())
+  brandKitchenId     String
+  name               String
+  description        String
+  mrpInPaise         Int          // Max Retail Price
+  memberPriceInPaise Int          // Discounted Eatclub Member Price
+  imageUrl           String
+  isVeg              Boolean      @default(true)
+  isBestseller       Boolean      @default(false)
+  isAvailable        Boolean      @default(true) // Hub-level 86'd out-of-stock flag
+  category           String
+  rating             Float        @default(4.5)
+  dietType           String?      // "VEG" | "NON_VEG" | "EGG" | "JAIN"
+  spiceLevel         Int?         // 0–3
+  gstPct             Int?         // e.g. 5 for 5% GST
+  variants           Json?        // [{ name: "Small", priceInPaise: 19900 }, ...]
+  addOns             Json?        // [{ name: "Extra cheese", priceInPaise: 5000 }, ...]
+  scheduledFrom      String?      // "HH:mm"
+  scheduledTo        String?      // "HH:mm"
+  brandKitchen       BrandKitchen @relation(fields: [brandKitchenId], references: [id], onDelete: Cascade)
 
   @@index([brandKitchenId, isAvailable])
   @@map("menu_items")
@@ -182,12 +227,14 @@ model Order {
   addressId          String
   hubId              String
   status             OrderStatus    @default(PENDING_CONFIRMATION)
+  paymentMethod      String         @default("UPI") // UPI / CARD / WALLET / COD
   mrpTotalPaise      Int
   memberSavingsPaise Int
   deliveryFeePaise   Int            @default(0)
   packagingFeePaise  Int            @default(0)
   taxPaise           Int
-  finalPaidPaise     Int
+  walletAppliedPaise Int            @default(0) // wallet money consumed by this order (paise)
+  finalPaidPaise     Int            // amount charged to the payment gateway (paise)
   discountBreakdown  Json           // { membership, coupon, wallet }
   brandOrders        BrandOrder[]
   payment            Payment?
@@ -222,7 +269,8 @@ model OrderItem {
   brandOrderId   String
   menuItemId     String
   nameSnapshot   String
-  priceSnapshot  Int
+  mrpSnapshot    Int        @default(0) // MRP per unit at purchase time (paise)
+  priceSnapshot  Int        // effective price paid per unit (paise)
   quantity       Int
   brandOrder     BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
 
@@ -234,10 +282,12 @@ model Payment {
   orderId        String        @unique
   gateway        String        @default("razorpay")
   gatewayOrderId String?
+  gatewayPaymentId String?
   status         PaymentStatus @default(INITIATED)
   amountInPaise  Int
   order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@index([gatewayOrderId])
   @@map("payments")
 }
 
@@ -274,16 +324,81 @@ model PricingRule {
   @@map("pricing_rules")
 }
 
+model Rider {
+  id               String         @id @default(cuid())
+  phone            String         @unique
+  name             String
+  status           RiderStatus    @default(PENDING_APPROVAL)
+  vehicleType      String         // "BIKE" | "SCOOTER" | "BICYCLE"
+  vehicleRegNo     String?
+  licenceDocUrl    String?
+  vehicleRcDocUrl  String?
+  bankAccountRef   String?
+  upiId            String?
+  isOnline         Boolean        @default(false)
+  liveLat          Float?
+  liveLng          Float?
+  currentHubId     String?
+  capacityMax      Int            @default(1)
+  rating           Float?         @default(5.0)
+  createdAt        DateTime       @default(now())
+  approvedAt       DateTime?
+  trips            DeliveryTrip[]
+  earnings         RiderEarning[]
+  currentHub       Hub?           @relation(fields: [currentHubId], references: [id])
+
+  @@index([status, isOnline])
+  @@map("riders")
+}
+
+model RiderEarning {
+  id            String   @id @default(cuid())
+  riderId       String
+  tripId        String?
+  type          String   // BASE_FEE / DISTANCE_FEE / SURGE / TIP / INCENTIVE / PENALTY / PAYOUT
+  amountInPaise Int      // signed
+  createdAt     DateTime @default(now())
+  rider         Rider    @relation(fields: [riderId], references: [id], onDelete: Cascade)
+
+  @@index([riderId, createdAt])
+  @@map("rider_earnings")
+}
+
+model Ticket {
+  id             String       @id @default(cuid())
+  raisedByType   String       // CUSTOMER / HUB / BRAND_OPS / RIDER
+  raisedById     String
+  orderId        String?
+  category       String       // MISSING_ITEM / WRONG_ITEM / LATE_DELIVERY / PAYMENT_ISSUE / RIDER_SAFETY / OTHER
+  status         TicketStatus @default(OPEN)
+  assignedToId   String?
+  priority       String       @default("NORMAL")
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+  resolvedAt     DateTime?
+
+  @@index([status, priority])
+  @@index([raisedById])
+  @@map("tickets")
+}
+
 model DeliveryTrip {
-  id        String     @id @default(cuid())
-  orderId   String     @unique
-  riderId   String?
-  status    TripStatus @default(UNASSIGNED)
-  pickupLat Float
-  pickupLng Float
-  liveLat   Float?
-  liveLng   Float?
-  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id            String     @id @default(cuid())
+  orderId       String     @unique
+  riderId       String?
+  status        TripStatus @default(UNASSIGNED)
+  pickupLat     Float
+  pickupLng     Float
+  liveLat       Float?
+  liveLng       Float?
+  deliveryOtp   String?
+  otpVerifiedAt DateTime?
+  proofPhotoUrl String?
+  lastPingAt    DateTime?
+  rider         Rider?     @relation(fields: [riderId], references: [id])
+  order         Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt @default(now())
 
   @@map("delivery_trips")
 }
@@ -313,3 +428,4 @@ model AuditLog {
   @@index([action, createdAt])
   @@map("audit_logs")
 }
+

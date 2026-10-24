@@ -23,6 +23,8 @@ export interface Brand {
   minOrderValue: number;
   categories: string[];
   isAvailable: boolean;
+  isOwned: boolean;        // SDD §7.1: default true (1st party vs 3rd party/franchise)
+  commissionPct?: number;  // Optional commission percentage cut for 3rd party marketplace brands
 }
 
 export interface CustomizationOption {
@@ -53,6 +55,13 @@ export interface MenuItem {
   isBestseller?: boolean;
   category: string;
   rating: number;
+  dietType?: 'VEG' | 'NON_VEG' | 'EGG' | 'JAIN';
+  spiceLevel?: number;
+  gstPct?: number;
+  variants?: Array<{ name: string; priceInPaise: number }>;
+  addOns?: Array<{ name: string; priceInPaise: number }>;
+  scheduledFrom?: string;
+  scheduledTo?: string;
   customizationGroups?: CustomizationGroup[];
   isAvailable: boolean;
 }
@@ -88,11 +97,30 @@ export interface SavedAddress {
   isDefault?: boolean;
 }
 
+export type UserRole = 'CUSTOMER' | 'HUB_STAFF' | 'HUB_MANAGER' | 'BRAND_OPS' | 'RIDER' | 'ADMIN';
+export type AdminSubRole = 'SUPER_ADMIN' | 'OPERATIONS_ADMIN' | 'FINANCE_ADMIN' | 'SUPPORT_ADMIN' | 'MARKETING_ADMIN';
+export type RiderStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'SUSPENDED' | 'REJECTED';
+export type TicketStatus = 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED';
+export type TripStatus =
+  | 'UNASSIGNED'
+  | 'ASSIGNED'
+  | 'ACCEPTED'
+  | 'ARRIVED_AT_HUB'
+  | 'PICKED_UP'
+  | 'ARRIVING'
+  | 'DELIVERED'
+  | 'STALE'
+  | 'CANCELLED';
+
 export interface UserProfile {
   id: string;
   name: string;
   email: string;
   phone: string;
+  role?: UserRole;
+  adminSubRole?: AdminSubRole;
+  scopedHubId?: string;
+  scopedBrandId?: string;
   isMember: boolean;
   membershipPlan?: {
     type: 'trial' | 'quarterly' | 'annual';
@@ -105,6 +133,7 @@ export interface UserProfile {
 }
 
 export type OrderStatus = 
+  | 'PENDING_CONFIRMATION'
   | 'PLACED' 
   | 'ACCEPTED_BY_KITCHEN' 
   | 'PREPARING' 
@@ -117,7 +146,7 @@ export type OrderStatus =
 export interface BrandOrderStatus {
   brandId: BrandId;
   brandName: string;
-  status: 'ACCEPTED' | 'PREPARING' | 'READY';
+  status: 'SENT_TO_KITCHEN' | 'ACCEPTED' | 'PREPARING' | 'READY' | 'REJECTED';
   itemsCount: number;
 }
 
@@ -148,6 +177,50 @@ export interface Order {
   };
 }
 
+export interface Rider {
+  id: string;
+  phone: string;
+  name: string;
+  status: RiderStatus;
+  vehicleType: string;
+  vehicleRegNo?: string;
+  licenceDocUrl?: string;
+  vehicleRcDocUrl?: string;
+  bankAccountRef?: string;
+  upiId?: string;
+  isOnline: boolean;
+  liveLat?: number;
+  liveLng?: number;
+  currentHubId?: string;
+  capacityMax: number;
+  rating?: number;
+  createdAt: string;
+  approvedAt?: string;
+}
+
+export interface RiderEarning {
+  id: string;
+  riderId: string;
+  tripId?: string;
+  type: 'BASE_FEE' | 'DISTANCE_FEE' | 'SURGE' | 'TIP' | 'INCENTIVE' | 'PENALTY' | 'PAYOUT';
+  amountInPaise: number;
+  createdAt: string;
+}
+
+export interface Ticket {
+  id: string;
+  raisedByType: 'CUSTOMER' | 'HUB' | 'BRAND_OPS' | 'RIDER';
+  raisedById: string;
+  orderId?: string;
+  category: 'MISSING_ITEM' | 'WRONG_ITEM' | 'LATE_DELIVERY' | 'PAYMENT_ISSUE' | 'RIDER_SAFETY' | 'OTHER';
+  status: TicketStatus;
+  assignedToId?: string;
+  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+  resolutionNote?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
 export interface Coupon {
   code: string;
   description: string;
@@ -156,3 +229,4 @@ export interface Coupon {
   minOrderValue: number;
   applicableBrandId?: BrandId;
 }
+

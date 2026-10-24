@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useCart } from '../context/CartContext';
+import { useUser } from '../context/UserContext';
 import { X, ShoppingBag, Plus, Minus, Trash2, Tag, ShieldCheck, ArrowRight, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -18,6 +19,7 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
 }) => {
   if (!isOpen) return null;
 
+  const { user } = useUser();
   const {
     cartItems,
     updateQuantity,
@@ -36,6 +38,8 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
     itemCount,
     distinctBrandsCount,
   } = useCart();
+
+  const prospectiveSavings = Math.round(mrpTotal * 0.3) + 45 + 25;
 
   const [couponInput, setCouponInput] = useState<string>('');
   const [couponError, setCouponError] = useState<string>('');
@@ -122,6 +126,24 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+                {/* Non-Member Free Trial Upsell Banner */}
+                {(!user || !user.isMember) && mrpTotal > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-rose-500 text-white shadow-md space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 font-black text-xs">
+                        <Sparkles className="w-4 h-4 text-amber-200 shrink-0" />
+                        <span>Save ₹{prospectiveSavings} with Free Trial!</span>
+                      </div>
+                      <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-white/20 uppercase tracking-wider">
+                        30-Day Trial
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-rose-100 leading-relaxed">
+                      Includes 30% OFF food total + ₹0 Delivery (₹45) & Packaging (₹25) fees.
+                    </p>
+                  </div>
+                )}
                 
                 {/* Multi-Brand Alert Banner */}
                 {distinctBrandsCount > 1 && (
@@ -261,14 +283,14 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
 
                   <div className="flex justify-between text-gray-500 dark:text-slate-400">
                     <span>Taxes (5% GST)</span>
-                    <span>₹{taxes}</span>
+                    <span className="tabular-nums">₹{taxes}</span>
                   </div>
 
                   <div className="h-px bg-gray-200 dark:bg-slate-800 my-2" />
 
                   <div className="flex justify-between text-sm font-extrabold text-gray-900 dark:text-white">
                     <span>To Pay</span>
-                    <span className="text-rose-600 dark:text-rose-400">₹{finalTotal}</span>
+                    <span className="text-rose-600 dark:text-rose-400 tabular-nums">₹{finalTotal}</span>
                   </div>
                 </div>
 
@@ -287,7 +309,7 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
                 >
                   <span>Proceed to Checkout</span>
                   <div className="flex items-center gap-2">
-                    <span>₹{finalTotal}</span>
+                    <span className="tabular-nums">₹{finalTotal}</span>
                     <ArrowRight className="w-4 h-4" />
                   </div>
                 </button>

@@ -1,20 +1,26 @@
 import { PrismaClient } from '@prisma/client';
+import { MOCK_MENU_ITEMS } from '../src/data/mockData';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Updating CraveOS Multi-Brand Cloud Kitchen Database with local Brand Logos & Banners...');
 
-  // 1. Create Hubs
+  // 1. Create Hubs with Operating Hours
   const hubHsr = await prisma.hub.upsert({
     where: { id: 'hub-hsr-01' },
-    update: {},
+    update: {
+      operatingHoursStart: '08:00',
+      operatingHoursEnd: '03:00',
+    },
     create: {
       id: 'hub-hsr-01',
       name: 'HSR Layout Cloud Kitchen Hub #01',
       city: 'Bengaluru',
       lat: 12.9121,
       lng: 77.6445,
+      operatingHoursStart: '08:00',
+      operatingHoursEnd: '03:00',
       servicePolygon: {
         type: 'Polygon',
         coordinates: [
@@ -32,13 +38,18 @@ async function main() {
 
   const hubIndiranagar = await prisma.hub.upsert({
     where: { id: 'hub-indiranagar-02' },
-    update: {},
+    update: {
+      operatingHoursStart: '08:00',
+      operatingHoursEnd: '03:00',
+    },
     create: {
       id: 'hub-indiranagar-02',
       name: 'Indiranagar Hub #02',
       city: 'Bengaluru',
       lat: 12.9719,
       lng: 77.6412,
+      operatingHoursStart: '08:00',
+      operatingHoursEnd: '03:00',
       servicePolygon: {
         type: 'Polygon',
         coordinates: [
@@ -191,7 +202,299 @@ async function main() {
 
   console.log('✅ Brands updated with exact local logos and banners.');
 
-  // 3. Seed Menu Items
+  // 3. Seed Users with Operational Roles & Scoped Permissions
+  const usersData = [
+    {
+      id: 'usr-super-admin',
+      phone: '+919999900001',
+      email: 'superadmin@eatclub.in',
+      name: 'System Super Admin',
+      role: 'ADMIN',
+      adminSubRole: 'SUPER_ADMIN' as const,
+      referralCode: 'SUPERADMIN01',
+    },
+    {
+      id: 'usr-ops-admin',
+      phone: '+919999900002',
+      email: 'opsadmin@eatclub.in',
+      name: 'Operations Admin',
+      role: 'ADMIN',
+      adminSubRole: 'OPERATIONS_ADMIN' as const,
+      referralCode: 'OPSADMIN01',
+    },
+    {
+      id: 'usr-hub-mgr-hsr',
+      phone: '+919999900003',
+      email: 'hsr.manager@eatclub.in',
+      name: 'Ramesh Kumar (HSR Hub Mgr)',
+      role: 'HUB_MANAGER',
+      scopedHubId: hubHsr.id,
+      referralCode: 'HUBMGRHSR',
+    },
+    {
+      id: 'usr-brand-ops-mojo',
+      phone: '+919999900004',
+      email: 'mojo.ops@eatclub.in',
+      name: 'Priya Sharma (MOJO Brand Ops)',
+      role: 'BRAND_OPS',
+      scopedBrandId: 'mojo-pizza',
+      referralCode: 'MOJOOPS01',
+    },
+  ];
+
+  for (const u of usersData) {
+    await prisma.user.upsert({
+      where: { id: u.id },
+      update: {
+        phone: u.phone,
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        adminSubRole: u.adminSubRole,
+        scopedHubId: u.scopedHubId,
+        scopedBrandId: u.scopedBrandId,
+      },
+      create: u,
+    });
+  }
+
+  // 4. Demo customer used by the storefront's sign-in shortcut.
+  //    The storefront keeps an address book in localStorage, but orders can
+  //    only reference database rows owned by the buyer — so these must exist.
+  const demoCustomer = await prisma.user.upsert({
+    where: { id: 'usr-101' },
+    update: {
+      email: 'alex.morgan@eatclub.in',
+      name: 'Alex Morgan',
+      phone: '+919876543210',
+      role: 'CUSTOMER',
+      walletBalance: 25000,
+    },
+    create: {
+      id: 'usr-101',
+      email: 'alex.morgan@eatclub.in',
+      name: 'Alex Morgan',
+      phone: '+919876543210',
+      role: 'CUSTOMER',
+      walletBalance: 25000,
+      referralCode: 'EATALEX50',
+    },
+  });
+
+  await prisma.membership.upsert({
+    where: { userId: demoCustomer.id },
+    update: {
+      status: 'ACTIVE',
+      planId: 'STANDARD_TRIAL',
+      renewsAt: new Date('2027-12-31T00:00:00.000Z'),
+    },
+    create: {
+      userId: demoCustomer.id,
+      status: 'ACTIVE',
+      planId: 'STANDARD_TRIAL',
+      renewsAt: new Date('2027-12-31T00:00:00.000Z'),
+    },
+  });
+
+  const demoAddresses = [
+    {
+      id: 'addr-1',
+      type: 'HOME' as const,
+      label: 'Home',
+      addressLine: 'Flat 402, Sunshine Heights, HSR Layout Sector 2',
+      city: 'Bengaluru',
+      pincode: '560102',
+      lat: 12.9121,
+      lng: 77.6445,
+      resolvedHubId: hubHsr.id,
+      isDefault: true,
+    },
+    {
+      id: 'addr-2',
+      type: 'WORK' as const,
+      label: 'Office HQ',
+      addressLine: 'Building 7, Embassy TechVillage, Outer Ring Road',
+      city: 'Bengaluru',
+      pincode: '560103',
+      lat: 12.926,
+      lng: 77.683,
+      resolvedHubId: hubHsr.id,
+      isDefault: false,
+    },
+    {
+      id: 'addr-3',
+      type: 'OTHER' as const,
+      label: 'Indiranagar Stay',
+      addressLine: '100ft Road, Near Metro Station, Indiranagar',
+      city: 'Bengaluru',
+      pincode: '560038',
+      lat: 12.9719,
+      lng: 77.6412,
+      resolvedHubId: hubIndiranagar.id,
+      isDefault: false,
+    },
+  ];
+
+  for (const address of demoAddresses) {
+    await prisma.address.upsert({
+      where: { id: address.id },
+      update: { ...address, userId: demoCustomer.id },
+      create: { ...address, userId: demoCustomer.id },
+    });
+  }
+
+  // 5. Seed Riders (APPROVED, PENDING_APPROVAL, SUSPENDED)
+  const ridersData = [
+    {
+      id: 'rider-1',
+      phone: '+919900011101',
+      name: 'Rahul Sharma',
+      status: 'APPROVED' as const,
+      vehicleType: 'BIKE',
+      vehicleRegNo: 'KA01EA1234',
+      licenceDocUrl: 'https://docs.eatclub.in/licences/r1.pdf',
+      vehicleRcDocUrl: 'https://docs.eatclub.in/rc/r1.pdf',
+      bankAccountRef: 'REF-BANK-R1-88',
+      upiId: 'rahul.rider@upi',
+      isOnline: true,
+      liveLat: 12.9125,
+      liveLng: 77.6448,
+      currentHubId: hubHsr.id,
+      capacityMax: 2,
+      rating: 4.9,
+      approvedAt: new Date(),
+    },
+    {
+      id: 'rider-2',
+      phone: '+919900011102',
+      name: 'Vikas Kumar',
+      status: 'APPROVED' as const,
+      vehicleType: 'SCOOTER',
+      vehicleRegNo: 'KA05MK5678',
+      licenceDocUrl: 'https://docs.eatclub.in/licences/r2.pdf',
+      vehicleRcDocUrl: 'https://docs.eatclub.in/rc/r2.pdf',
+      bankAccountRef: 'REF-BANK-R2-99',
+      upiId: 'vikas.rider@upi',
+      isOnline: true,
+      liveLat: 12.9722,
+      liveLng: 77.6415,
+      currentHubId: hubIndiranagar.id,
+      capacityMax: 1,
+      rating: 4.8,
+      approvedAt: new Date(),
+    },
+    {
+      id: 'rider-3',
+      phone: '+919900011103',
+      name: 'Amit Patel',
+      status: 'APPROVED' as const,
+      vehicleType: 'BIKE',
+      vehicleRegNo: 'KA03HX9988',
+      isOnline: false,
+      currentHubId: hubHsr.id,
+      rating: 4.7,
+      approvedAt: new Date(),
+    },
+    {
+      id: 'rider-4',
+      phone: '+919900011104',
+      name: 'Suresh Gowda',
+      status: 'PENDING_APPROVAL' as const,
+      vehicleType: 'BICYCLE',
+      isOnline: false,
+    },
+    {
+      id: 'rider-5',
+      phone: '+919900011105',
+      name: 'Deepak Singh',
+      status: 'SUSPENDED' as const,
+      vehicleType: 'BIKE',
+      vehicleRegNo: 'KA02JL4321',
+      isOnline: false,
+      rating: 3.8,
+    },
+    {
+      id: 'rider-6',
+      phone: '+919900011106',
+      name: 'Karan Mehta',
+      status: 'APPROVED' as const,
+      vehicleType: 'BIKE',
+      vehicleRegNo: 'KA51Z1122',
+      isOnline: true,
+      liveLat: 12.9130,
+      liveLng: 77.6450,
+      currentHubId: hubHsr.id,
+      rating: 4.95,
+      approvedAt: new Date(),
+    },
+  ];
+
+  for (const r of ridersData) {
+    await prisma.rider.upsert({
+      where: { id: r.id },
+      update: r,
+      create: r,
+    });
+  }
+
+  // 5. Seed Rider Earnings
+  const earningsData = [
+    { id: 're-1', riderId: 'rider-1', type: 'BASE_FEE', amountInPaise: 4000 },
+    { id: 're-2', riderId: 'rider-1', type: 'DISTANCE_FEE', amountInPaise: 2500 },
+    { id: 're-3', riderId: 'rider-1', type: 'TIP', amountInPaise: 3000 },
+    { id: 're-4', riderId: 'rider-2', type: 'BASE_FEE', amountInPaise: 4000 },
+    { id: 're-5', riderId: 'rider-2', type: 'SURGE', amountInPaise: 1500 },
+    { id: 're-6', riderId: 'rider-6', type: 'INCENTIVE', amountInPaise: 5000 },
+  ];
+
+  for (const e of earningsData) {
+    await prisma.riderEarning.upsert({
+      where: { id: e.id },
+      update: e,
+      create: e,
+    });
+  }
+
+  // 6. Seed Support & Dispute Tickets
+  const ticketsData = [
+    {
+      id: 'tkt-1',
+      raisedByType: 'CUSTOMER',
+      raisedById: 'usr-101',
+      category: 'LATE_DELIVERY',
+      status: 'OPEN' as const,
+      priority: 'HIGH',
+    },
+    {
+      id: 'tkt-2',
+      raisedByType: 'HUB',
+      raisedById: 'usr-hub-mgr-hsr',
+      category: 'MISSING_ITEM',
+      status: 'RESOLVED' as const,
+      assignedToId: 'usr-ops-admin',
+      priority: 'NORMAL',
+      resolutionNote: 'Kitchen dispatched replacement item via express rider.',
+      resolvedAt: new Date(),
+    },
+    {
+      id: 'tkt-3',
+      raisedByType: 'RIDER',
+      raisedById: 'rider-1',
+      category: 'RIDER_SAFETY',
+      status: 'IN_PROGRESS' as const,
+      priority: 'URGENT',
+    },
+  ];
+
+  for (const t of ticketsData) {
+    await prisma.ticket.upsert({
+      where: { id: t.id },
+      update: t,
+      create: t,
+    });
+  }
+
+  // 7. Seed Enriched Menu Items
   const menuItemsData = [
     // MOJO PIZZA
     {
@@ -206,6 +509,13 @@ async function main() {
       isBestseller: true,
       category: 'Pizza',
       rating: 4.9,
+      dietType: 'VEG',
+      spiceLevel: 1,
+      gstPct: 5,
+      variants: [{ name: '10 Inch Pan', priceInPaise: 34900 }, { name: '12 Inch Cheese Burst', priceInPaise: 49900 }],
+      addOns: [{ name: 'Extra Mozzarella', priceInPaise: 6900 }, { name: 'Jalapenos', priceInPaise: 3900 }],
+      scheduledFrom: '10:00',
+      scheduledTo: '02:30',
     },
     {
       id: 'pz-2',
@@ -219,6 +529,11 @@ async function main() {
       isBestseller: true,
       category: 'Pizza',
       rating: 4.8,
+      dietType: 'NON_VEG',
+      spiceLevel: 2,
+      gstPct: 5,
+      variants: [{ name: '10 Inch Pan', priceInPaise: 37900 }],
+      addOns: [{ name: 'Extra BBQ Chicken', priceInPaise: 8900 }],
     },
     {
       id: 'pz-3',
@@ -232,6 +547,9 @@ async function main() {
       isBestseller: true,
       category: 'Pizza',
       rating: 4.7,
+      dietType: 'VEG',
+      spiceLevel: 0,
+      gstPct: 5,
     },
     {
       id: 'pz-4',
@@ -245,6 +563,9 @@ async function main() {
       isBestseller: false,
       category: 'Pizza',
       rating: 4.6,
+      dietType: 'VEG',
+      spiceLevel: 1,
+      gstPct: 5,
     },
     {
       id: 'pz-5',
@@ -258,6 +579,9 @@ async function main() {
       isBestseller: false,
       category: 'Pizza',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 3,
+      gstPct: 5,
     },
     {
       id: 'pz-6',
@@ -271,6 +595,9 @@ async function main() {
       isBestseller: false,
       category: 'Pizza',
       rating: 4.7,
+      dietType: 'NON_VEG',
+      spiceLevel: 2,
+      gstPct: 5,
     },
 
     // LEANCRUST
@@ -286,6 +613,9 @@ async function main() {
       isBestseller: true,
       category: 'ThinCrust',
       rating: 4.9,
+      dietType: 'VEG',
+      spiceLevel: 0,
+      gstPct: 5,
     },
     {
       id: 'tc-2',
@@ -299,6 +629,9 @@ async function main() {
       isBestseller: true,
       category: 'ThinCrust',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 0,
+      gstPct: 5,
     },
     {
       id: 'tc-3',
@@ -312,6 +645,9 @@ async function main() {
       isBestseller: false,
       category: 'ThinCrust',
       rating: 4.7,
+      dietType: 'VEG',
+      spiceLevel: 0,
+      gstPct: 5,
     },
 
     // BOX8
@@ -327,6 +663,9 @@ async function main() {
       isBestseller: true,
       category: 'Thali',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 1,
+      gstPct: 5,
     },
     {
       id: 'th-2',
@@ -340,6 +679,9 @@ async function main() {
       isBestseller: true,
       category: 'Thali',
       rating: 4.9,
+      dietType: 'NON_VEG',
+      spiceLevel: 2,
+      gstPct: 5,
     },
 
     // ZAZA BIRYANI
@@ -355,6 +697,9 @@ async function main() {
       isBestseller: true,
       category: 'Biryani',
       rating: 4.9,
+      dietType: 'NON_VEG',
+      spiceLevel: 3,
+      gstPct: 5,
     },
     {
       id: 'by-2',
@@ -368,6 +713,9 @@ async function main() {
       isBestseller: true,
       category: 'Biryani',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 2,
+      gstPct: 5,
     },
 
     // NH1 BOWLS
@@ -383,6 +731,9 @@ async function main() {
       isBestseller: true,
       category: 'Bowl',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 1,
+      gstPct: 5,
     },
 
     // WEFIT
@@ -398,6 +749,9 @@ async function main() {
       isBestseller: true,
       category: 'High Protein',
       rating: 4.9,
+      dietType: 'NON_VEG',
+      spiceLevel: 0,
+      gstPct: 5,
     },
 
     // MEALFUL ROLLS
@@ -413,6 +767,9 @@ async function main() {
       isBestseller: true,
       category: 'Rolls',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 2,
+      gstPct: 5,
     },
 
     // ZULU'S PIZZA
@@ -428,6 +785,9 @@ async function main() {
       isBestseller: true,
       category: 'Pizza',
       rating: 4.8,
+      dietType: 'VEG',
+      spiceLevel: 1,
+      gstPct: 5,
     },
   ];
 
@@ -447,6 +807,13 @@ async function main() {
         isBestseller: item.isBestseller,
         category: item.category,
         rating: item.rating,
+        dietType: item.dietType,
+        spiceLevel: item.spiceLevel,
+        gstPct: item.gstPct,
+        variants: item.variants ? JSON.parse(JSON.stringify(item.variants)) : undefined,
+        addOns: item.addOns ? JSON.parse(JSON.stringify(item.addOns)) : undefined,
+        scheduledFrom: item.scheduledFrom,
+        scheduledTo: item.scheduledTo,
       },
       create: {
         id: item.id,
@@ -461,11 +828,63 @@ async function main() {
         isAvailable: true,
         category: item.category,
         rating: item.rating,
+        dietType: item.dietType,
+        spiceLevel: item.spiceLevel,
+        gstPct: item.gstPct,
+        variants: item.variants ? JSON.parse(JSON.stringify(item.variants)) : undefined,
+        addOns: item.addOns ? JSON.parse(JSON.stringify(item.addOns)) : undefined,
+        scheduledFrom: item.scheduledFrom,
+        scheduledTo: item.scheduledTo,
       },
     });
   }
 
-  console.log('✅ Menu items updated.');
+  console.log('✅ Menu items, operational users, riders, earnings, and tickets seeded successfully.');
+
+  // 8. Catalog parity — the storefront's MOCK_MENU_ITEMS is its advertised
+  //    catalogue. Any item that exists there but not in the database would
+  //    render as orderable and then fail at checkout with "no longer on the
+  //    menu". Upsert only missing rows so curated prices are never clobbered.
+  const seededMenuItemIds = new Set(menuItemsData.map((item) => item.id));
+  let parityAdded = 0;
+
+  for (const item of MOCK_MENU_ITEMS) {
+    if (seededMenuItemIds.has(item.id)) continue;
+
+    const brandKitchenId = brandKitchenMap[item.brandId];
+    if (!brandKitchenId) {
+      console.warn(`⚠️  Skipping ${item.id}: no HSR brand kitchen for '${item.brandId}'`);
+      continue;
+    }
+
+    await prisma.menuItem.upsert({
+      where: { id: item.id },
+      update: {},
+      create: {
+        id: item.id,
+        brandKitchenId,
+        name: item.name,
+        description: item.description,
+        mrpInPaise: Math.round(item.mrp * 100),
+        memberPriceInPaise: Math.round(item.memberPrice * 100),
+        imageUrl: item.image,
+        isVeg: item.isVeg,
+        isBestseller: !!item.isBestseller,
+        isAvailable: item.isAvailable !== false,
+        category: item.category,
+        rating: item.rating,
+        dietType: item.dietType || (item.isVeg ? 'VEG' : 'NON_VEG'),
+        spiceLevel: item.spiceLevel ?? 1,
+        gstPct: item.gstPct ?? 5,
+        variants: item.variants ? JSON.parse(JSON.stringify(item.variants)) : undefined,
+        addOns: item.addOns ? JSON.parse(JSON.stringify(item.addOns)) : undefined,
+      },
+    });
+
+    parityAdded += 1;
+  }
+
+  console.log(`✅ Catalog parity: ${parityAdded} storefront items added to the database.`);
 }
 
 main()
@@ -476,3 +895,4 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+

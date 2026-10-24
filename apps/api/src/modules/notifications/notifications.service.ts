@@ -104,4 +104,54 @@ export class NotificationsService {
 
     return { success: true };
   }
+
+  async sendMembershipExpiryEmail(email: string, userName?: string) {
+    this.logger.log(`📧 [Resend] Membership Expiry Notice → ${email}`);
+
+    if (!this.resend) {
+      this.logger.warn('⚠️ Resend not initialized — no API key found');
+      return { success: true };
+    }
+
+    const toAddress =
+      process.env.NODE_ENV === 'development'
+        ? (process.env.DEV_EMAIL_RECIPIENT || email)
+        : email;
+
+    const { data, error } = await this.resend.emails.send({
+      from: 'CraveOS Membership <onboarding@resend.dev>',
+      to: [toAddress],
+      subject: `Your EatClub Free Trial Has Expired — Renew to Keep Saving!`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: 900; color: #e11d48; margin: 0;">🍽️ CraveOS</h1>
+            <p style="color: #6b7280; font-size: 13px; margin: 4px 0 0;">Cloud Kitchen Platform</p>
+          </div>
+          <h2 style="color: #111827; font-size: 20px; text-align: center;">⏰ Free Trial Expired</h2>
+          <p style="color: #374151; font-size: 14px; text-align: center;">
+            Hi ${userName || 'Foodie'}, your EatClub trial membership has expired.
+          </p>
+          <div style="background: #fff1f2; border: 1px solid #fecdd3; border-radius: 10px; padding: 20px; margin: 16px 0; text-align: center;">
+            <p style="margin: 0 0 8px 0; font-size: 15px; font-weight: 800; color: #be123c;">
+              Don't lose your 30% OFF & ₹0 Delivery Benefits!
+            </p>
+            <p style="margin: 0; font-size: 13px; color: #9f1239;">
+              Renew your membership now to continue enjoying zero delivery/packaging fees and multi-brand savings.
+            </p>
+          </div>
+          <p style="color: #6b7280; font-size: 12px; text-align: center;">Dispatched from your local Cloud Kitchen Hub.</p>
+        </div>
+      `,
+    });
+
+    if (error) {
+      this.logger.error(`❌ Resend membership expiry error:`);
+      this.logger.error(JSON.stringify(error, null, 2));
+    } else {
+      this.logger.log(`✅ Membership expiry email sent! Resend ID: ${data?.id}`);
+    }
+
+    return { success: true };
+  }
 }

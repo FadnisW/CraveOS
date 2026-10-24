@@ -138,9 +138,27 @@ export const AICraveAssistantModal: React.FC<AICraveAssistantModalProps> = ({
 
           {/* Generated Result */}
           {isGenerating && (
-            <div className="py-8 text-center space-y-2">
-              <Sparkles className="w-8 h-8 text-rose-500 animate-spin mx-auto" />
-              <p className="text-xs font-bold text-gray-700 dark:text-slate-300">Gemini AI is crafting your multi-brand meal combo...</p>
+            <div className="space-y-4 pt-2">
+              <div className="p-3 rounded-2xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/40 flex items-center gap-2 animate-pulse">
+                <Sparkles className="w-4 h-4 text-rose-500 animate-spin shrink-0" />
+                <div className="h-3.5 bg-rose-200 dark:bg-rose-900/60 rounded-lg w-3/4" />
+              </div>
+
+              {/* Skeleton Loaders mimicking meal combo cards */}
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="flex items-center justify-between p-3 rounded-2xl bg-gray-50 dark:bg-slate-800/60 border border-gray-200/60 dark:border-slate-700/50 animate-pulse">
+                    <div className="flex items-center gap-3 w-full">
+                      <div className="w-10 h-10 rounded-xl bg-gray-200 dark:bg-slate-700 shrink-0" />
+                      <div className="space-y-1.5 w-full pr-4">
+                        <div className="h-3 bg-gray-200 dark:bg-slate-700 rounded-md w-2/3" />
+                        <div className="h-2 bg-rose-100 dark:bg-rose-950/60 rounded-md w-1/4" />
+                      </div>
+                    </div>
+                    <div className="h-4 bg-gray-200 dark:bg-slate-700 rounded-md w-10 shrink-0" />
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

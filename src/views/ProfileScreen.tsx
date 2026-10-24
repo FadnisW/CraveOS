@@ -18,6 +18,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpen
   const [walletBalance, setWalletBalance] = useState<number>(currentUser.walletBalance || 100);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [copied, setCopied] = useState<boolean>(false);
+  const [shared, setShared] = useState<boolean>(false);
 
   useEffect(() => {
     async function loadWallet() {
@@ -35,11 +36,45 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpen
     loadWallet();
   }, [currentUser?.id]);
 
+  const referralCode = currentUser.referralCode || 'EATCLUB100';
+
   const handleCopyCode = () => {
-    navigator.clipboard.writeText(currentUser.referralCode || 'EATCLUB100');
+    navigator.clipboard.writeText(referralCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Task 10 (SDD §4.2): Web Share API with clipboard fallback for desktop
+  const handleShareCode = async () => {
+    const shareData = {
+      title: 'Join me on Eatclub!',
+      text: `Use my referral code ${referralCode} and get ₹100 OFF your first order on Eatclub Cloud Kitchen!`,
+      url: 'https://eatclub.in',
+    };
+
+    try {
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share(shareData);
+        setShared(true);
+        setTimeout(() => setShared(false), 2500);
+      } else {
+        // Desktop fallback: copy to clipboard
+        await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch (err: any) {
+      // Share cancelled by user or failed — silently fall back to clipboard copy
+      if (err?.name !== 'AbortError') {
+        try {
+          await navigator.clipboard.writeText(referralCode);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch (_) {}
+      }
+    }
+  };
+
 
   if (!isAuthenticated) {
     return (
@@ -86,10 +121,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpen
         </div>
 
         <div className="flex items-center gap-3 self-stretch sm:self-auto justify-between sm:justify-end">
-          <div className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 text-center">
+          <button
+            onClick={() => onNavigate('membership')}
+            className="p-3 rounded-2xl bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 text-center transition-all cursor-pointer"
+          >
             <span className="text-[10px] font-bold uppercase tracking-wider text-rose-100">Total Savings</span>
-            <div className="text-2xl font-black text-amber-300">₹{currentUser.membershipPlan?.totalSavingsToDate || 1250}</div>
-          </div>
+            <div className="text-xl font-black text-amber-300">₹{currentUser.membershipPlan?.totalSavingsToDate || 1250} &rarr;</div>
+          </button>
           <button
             onClick={logout}
             className="p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white transition-colors"
@@ -131,12 +169,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpen
             Share your referral code. Friends get ₹100 OFF and you get ₹100 wallet credit!
           </p>
 
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-gray-100 dark:bg-slate-700 text-xs font-bold">
-            <span className="tracking-widest text-gray-900 dark:text-white">{MOCK_USER.referralCode}</span>
-            <button onClick={handleCopyCode} className="flex items-center gap-1 text-rose-600 dark:text-rose-400 hover:underline">
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copied ? 'Copied!' : 'Copy Code'}</span>
-            </button>
+          <div className="flex items-center justify-between p-3 rounded-2xl bg-gray-100 dark:bg-slate-700 text-xs font-bold gap-2">
+            <span className="tracking-widest text-gray-900 dark:text-white font-mono">{referralCode}</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleShareCode}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>{shared ? 'Shared!' : 'Share Code'}</span>
+              </button>
+              <button onClick={handleCopyCode} className="flex items-center gap-1 text-rose-600 dark:text-rose-400 hover:underline">
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? 'Copied!' : 'Copy'}</span>
+              </button>
+            </div>
           </div>
         </div>
 

@@ -15,6 +15,18 @@ export async function apiRequest<T = any>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  // SDD §5.2: Attach a deterministic Idempotency-Key for POST /orders
+  // to prevent duplicate charges if the network drops and the client retries.
+  // Key is stable within a 5-minute window bucket, so a retry in the same window
+  // hits the same server-side idempotency cache rather than creating a second order.
+  if (typeof window !== 'undefined' && endpoint === '/orders' && options.method === 'POST') {
+    const body = typeof options.body === 'string' ? options.body : '';
+    const windowBucket = Math.floor(Date.now() / 300000); // 5-minute window
+    const rawKey = `${body}::${windowBucket}`;
+    const idempotencyKey = btoa(encodeURIComponent(rawKey)).substring(0, 64);
+    headers['Idempotency-Key'] = idempotencyKey;
+  }
+
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
@@ -62,10 +74,31 @@ export const api = {
     }),
 
   // Pricing
-  calculatePrice: (items: any[], isMember: boolean, couponCode?: string, useWalletBalance?: number) =>
+  calculatePrice: (
+    items: any[],
+    isMember: boolean,
+    couponCode?: string,
+    useWalletBalance?: number,
+    userId?: string,
+  ) =>
     apiRequest('/pricing/calculate', {
       method: 'POST',
-      body: JSON.stringify({ items, isMember, couponCode, useWalletBalance }),
+      body: JSON.stringify({ items, isMember, couponCode, useWalletBalance, userId }),
+    }),
+  /**
+   * Server-side quote used by checkout. Sending the userId lets the server
+   * verify membership and cap the wallet contribution at the stored balance.
+   */
+  quoteOrder: (payload: {
+    userId?: string;
+    items: { price: number; memberPrice?: number; quantity: number }[];
+    couponCode?: string;
+    useWalletBalance?: number;
+    isMember?: boolean;
+  }) =>
+    apiRequest('/pricing/calculate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
   getActiveOffers: () => apiRequest('/pricing/offers/active'),
 
@@ -78,20 +111,67 @@ export const api = {
 
   getOrderById: (orderId: string) => apiRequest(`/orders/${orderId}`),
   getUserOrders: (userId: string) => apiRequest(`/orders/user/${userId}`),
-  updateBrandOrderStatus: (ticketId: string, status: string) =>
+  cancelOrder: (orderId: string, reason?: string) =>
+    apiRequest(`/orders/${orderId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  updateBrandOrderStatus: (ticketId: string, status: string, rejectReason?: string) =>
     apiRequest(`/orders/brand-tickets/${ticketId}/status`, {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, rejectReason }),
     }),
 
   // Payments & Wallet
-  createRazorpayOrder: (amount: number, orderId: string) =>
+  createRazorpayOrder: (orderId: string) =>
     apiRequest('/payments/create-razorpay-order', {
       method: 'POST',
-      body: JSON.stringify({ amount, orderId }),
+      body: JSON.stringify({ orderId }),
+    }),
+
+  /**
+   * Confirms a Razorpay checkout callback. The server verifies the HMAC
+   * signature and settles the order; the client must not trust the callback.
+   */
+  verifyPayment: (payload: {
+    razorpay_order_id: string;
+    razorpay_payment_id: string;
+    razorpay_signature: string;
+  }) =>
+    apiRequest('/payments/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   getWalletBalance: (userId: string) => apiRequest(`/payments/wallet/${userId}`),
+
+  // Addresses
+  addresses: {
+    list: () => apiRequest('/addresses'),
+    create: (data: any) =>
+      apiRequest('/addresses', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    /**
+     * Idempotent checkout provisioning: creates the address if it does not
+     * exist for this buyer and returns the canonical database row.
+     */
+    ensure: (data: any) =>
+      apiRequest('/addresses/ensure', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: any) =>
+      apiRequest(`/addresses/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    remove: (id: string) =>
+      apiRequest(`/addresses/${id}`, {
+        method: 'DELETE',
+      }),
+  },
 
   // Logistics
   autoAssignRider: (orderId: string) =>
@@ -100,4 +180,264 @@ export const api = {
     }),
 
   getActiveTrips: () => apiRequest('/logistics/trips'),
+
+  acceptTrip: (tripId: string, riderId: string) =>
+    apiRequest(`/logistics/trips/${tripId}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId }),
+    }),
+
+  arrivedAtHub: (tripId: string, riderId: string, lat: number, lng: number) =>
+    apiRequest(`/logistics/trips/${tripId}/arrived-hub`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId, lat, lng }),
+    }),
+
+  confirmPickup: (tripId: string, riderId: string) =>
+    apiRequest(`/logistics/trips/${tripId}/pickup`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId }),
+    }),
+
+  arrivedAtCustomer: (tripId: string, riderId: string) =>
+    apiRequest(`/logistics/trips/${tripId}/arrived-customer`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId }),
+    }),
+
+  verifyDeliveryOtp: (tripId: string, riderId: string, otp: string, proofPhotoUrl?: string) =>
+    apiRequest(`/logistics/trips/${tripId}/deliver`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId, otp, proofPhotoUrl }),
+    }),
+
+  rejectTrip: (tripId: string, riderId: string, reason: string) =>
+    apiRequest(`/logistics/trips/${tripId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ riderId, reason }),
+    }),
+
+  cancelTrip: (tripId: string, reason: string) =>
+    apiRequest(`/logistics/trips/${tripId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  getRiderActiveTrip: (riderId: string) =>
+    apiRequest(`/logistics/trips/rider/${riderId}/active`),
+
+  getRiderTripHistory: (riderId: string) =>
+    apiRequest(`/logistics/trips/rider/${riderId}/history`),
+
+  // Support Tickets
+  tickets: {
+    create: (data: any) =>
+      apiRequest('/tickets', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    getAll: (filters?: any) => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append('status', filters.status);
+      if (filters?.category) params.append('category', filters.category);
+      if (filters?.priority) params.append('priority', filters.priority);
+      return apiRequest(`/tickets?${params.toString()}`);
+    },
+
+    getById: (id: string) => apiRequest(`/tickets/${id}`),
+
+    assign: (id: string, staffId: string) =>
+      apiRequest(`/tickets/${id}/assign`, {
+        method: 'PATCH',
+        body: JSON.stringify({ staffId }),
+      }),
+
+    updateStatus: (id: string, status: string) =>
+      apiRequest(`/tickets/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }),
+
+    resolve: (id: string, note: string) =>
+      apiRequest(`/tickets/${id}/resolve`, {
+        method: 'PATCH',
+        body: JSON.stringify({ note }),
+      }),
+
+    getUserTickets: (userId: string) => apiRequest(`/tickets/user/${userId}`),
+
+    getStats: () => apiRequest('/tickets/stats'),
+  },
+
+  // Admin Module
+  admin: {
+    getDashboardKPIs: () => apiRequest('/admin/dashboard/kpis'),
+    getLiveOrdersMap: () => apiRequest('/admin/dashboard/live-orders'),
+    getOrderDistribution: () => apiRequest('/admin/dashboard/order-distribution'),
+    getRevenueTrend: () => apiRequest('/admin/dashboard/revenue-trend'),
+    getUsers: (search?: string) => {
+      const params = search ? `?search=${encodeURIComponent(search)}` : '';
+      return apiRequest(`/admin/users${params}`);
+    },
+    getUserById: (id: string) => apiRequest(`/admin/users/${id}`),
+    blockUser: (id: string, blocked: boolean) =>
+      apiRequest(`/admin/users/${id}/block`, {
+        method: 'PATCH',
+        body: JSON.stringify({ blocked }),
+      }),
+    deleteUser: (id: string) =>
+      apiRequest(`/admin/users/${id}`, {
+        method: 'DELETE',
+      }),
+    adjustWallet: (id: string, amountInPaise: number, reason: string) =>
+      apiRequest(`/admin/users/${id}/wallet-adjust`, {
+        method: 'POST',
+        body: JSON.stringify({ amountInPaise, reason }),
+      }),
+    getOrders: (filters?: any) => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append('status', filters.status);
+      if (filters?.hubId) params.append('hubId', filters.hubId);
+      return apiRequest(`/admin/orders?${params.toString()}`);
+    },
+    manuallyReassignRider: (orderId: string, riderId: string) =>
+      apiRequest(`/admin/orders/${orderId}/reassign-rider`, {
+        method: 'POST',
+        body: JSON.stringify({ riderId }),
+      }),
+    createHub: (data: any) =>
+      apiRequest('/admin/hubs', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateHub: (id: string, data: any) =>
+      apiRequest(`/admin/hubs/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    assignStaffToHub: (hubId: string, userId: string, role: string) =>
+      apiRequest(`/admin/hubs/${hubId}/assign-staff`, {
+        method: 'POST',
+        body: JSON.stringify({ userId, role }),
+      }),
+    createBrand: (data: any) =>
+      apiRequest('/admin/brands', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateBrand: (id: string, data: any) =>
+      apiRequest(`/admin/brands/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    assignBrandOps: (brandId: string, userId: string) =>
+      apiRequest(`/admin/brands/${brandId}/assign-ops`, {
+        method: 'POST',
+        body: JSON.stringify({ userId }),
+      }),
+    getFinanceTransactions: (limit?: number) =>
+      apiRequest(`/admin/finance/transactions${limit ? `?limit=${limit}` : ''}`),
+    getRiderPayouts: () => apiRequest('/admin/finance/rider-payouts'),
+    processBatchRiderPayouts: (riderIds: string[]) =>
+      apiRequest('/admin/finance/rider-payouts/batch', {
+        method: 'POST',
+        body: JSON.stringify({ riderIds }),
+      }),
+    getRevenueReport: () => apiRequest('/admin/finance/revenue-report'),
+    getStaff: () => apiRequest('/admin/staff'),
+    createStaff: (data: any) =>
+      apiRequest('/admin/staff', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    getAuditLogs: (action?: string, limit?: number) => {
+      const params = new URLSearchParams();
+      if (action) params.append('action', action);
+      if (limit) params.append('limit', limit.toString());
+      return apiRequest(`/admin/audit-log?${params.toString()}`);
+    },
+  },
+
+  // Riders Admin / Self
+  riders: {
+    getApprovalQueue: () => apiRequest('/riders/approval-queue'),
+    getAll: (filters?: any) => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append('status', filters.status);
+      if (filters?.hubId) params.append('hubId', filters.hubId);
+      if (filters?.isOnline !== undefined) params.append('isOnline', filters.isOnline);
+      return apiRequest(`/riders?${params.toString()}`);
+    },
+    getById: (id: string) => apiRequest(`/riders/${id}`),
+    updateStatus: (id: string, status: string, reason?: string) =>
+      apiRequest(`/riders/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, reason }),
+      }),
+    toggleOnline: (id: string, isOnline: boolean) =>
+      apiRequest(`/riders/${id}/online`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isOnline }),
+      }),
+  },
+
+  // Hub Operations (§5.1)
+  hubOps: {
+    getHubs: () => apiRequest('/hub-ops/hubs'),
+    getDashboard: (hubId: string) => apiRequest(`/hub-ops/${hubId}/dashboard`),
+    getStock: (hubId: string) => apiRequest(`/hub-ops/${hubId}/stock`),
+    bulkToggle86: (hubId: string, updates: { menuItemId: string; isAvailable: boolean }[]) =>
+      apiRequest(`/hub-ops/${hubId}/stock/bulk-86`, {
+        method: 'PATCH',
+        body: JSON.stringify({ updates }),
+      }),
+    getStaff: (hubId: string) => apiRequest(`/hub-ops/${hubId}/staff`),
+    assignStaff: (hubId: string, userId: string, role: 'HUB_STAFF' | 'HUB_MANAGER') =>
+      apiRequest(`/hub-ops/${hubId}/staff/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ userId, role }),
+      }),
+    getFinance: (hubId: string) => apiRequest(`/hub-ops/${hubId}/finance`),
+    getRiders: (hubId: string) => apiRequest(`/hub-ops/${hubId}/riders`),
+    getKdsTickets: (hubId: string) => apiRequest(`/hub-ops/${hubId}/kds/tickets`),
+    confirmRiderHandoff: (hubId: string, tripId: string) =>
+      apiRequest(`/hub-ops/${hubId}/rider-handoff/${tripId}`, {
+        method: 'POST',
+      }),
+  },
+
+  // Brand Operations (§5.2)
+  brandOps: {
+    getDashboard: (brandId: string) => apiRequest(`/brand-ops/${brandId}/dashboard`),
+    getMenu: (brandId: string) => apiRequest(`/brand-ops/${brandId}/menu`),
+    createMenuItem: (brandId: string, data: any) =>
+      apiRequest(`/brand-ops/${brandId}/menu/items`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateMenuItem: (brandId: string, itemId: string, data: any) =>
+      apiRequest(`/brand-ops/${brandId}/menu/items/${itemId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    deleteMenuItem: (brandId: string, itemId: string) =>
+      apiRequest(`/brand-ops/${brandId}/menu/items/${itemId}`, {
+        method: 'DELETE',
+      }),
+    bulkUpdatePrice: (brandId: string, updates: { itemId: string; mrpInPaise: number; memberPriceInPaise?: number }[]) =>
+      apiRequest(`/brand-ops/${brandId}/menu/items/bulk-price`, {
+        method: 'PATCH',
+        body: JSON.stringify({ updates }),
+      }),
+    proposePromotion: (brandId: string, data: any) =>
+      apiRequest(`/brand-ops/${brandId}/promotions/propose`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    getAnalytics: (brandId: string) => apiRequest(`/brand-ops/${brandId}/analytics`),
+    getFinance: (brandId: string) => apiRequest(`/brand-ops/${brandId}/finance`),
+  },
 };
+
+

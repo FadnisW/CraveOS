@@ -93,3 +93,8 @@
 .animate-pulse-glow {
   animation: pulse-glow 3s infinite ease-in-out;
 }
+
+/* Tabular Numerals for Live Prices & ETA Countdown Jitter Prevention (SDD §8.4) */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

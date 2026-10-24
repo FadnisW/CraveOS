@@ -3,9 +3,11 @@ import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
 import { PricingModule } from '../pricing/pricing.module';
 import { QueueModule } from '../queue/queue.module';
+import { LogisticsModule } from '../logistics/logistics.module';
+import { WebsocketsModule } from '../websockets/websockets.module';
 
 @Module({
-  imports: [PricingModule, QueueModule],
+  imports: [PricingModule, QueueModule, LogisticsModule, WebsocketsModule],
   controllers: [OrdersController],
   providers: [OrdersService],
   exports: [OrdersService],

@@ -1,24 +1,54 @@
-import { Injectable, BadRequestException, ConflictException, NotFoundException, Logger, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  Logger,
+  Inject,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { Queue } from 'bullmq';
 import { KITCHEN_QUEUE } from '../queue/queue.constants';
+import { LogisticsService } from '../logistics/logistics.service';
+import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { AuthenticatedActor } from '../../common/types/authenticated-actor';
+
+export type { AuthenticatedActor };
+
+export type PaymentMethod = 'UPI' | 'CARD' | 'WALLET' | 'COD';
 
 export interface CreateOrderDto {
-  userId: string;
-  hubId: string;
+  /** Ignored — the authenticated principal is always the order owner. */
+  userId?: string;
+  hubId?: string;
   addressId: string;
   couponCode?: string;
   useWalletBalance?: number;
+  paymentMethod?: PaymentMethod;
   items: {
     menuItemId: string;
-    brandId: string;
-    nameSnapshot: string;
-    mrp?: number;
-    price: number;
     quantity: number;
+    /** Legacy client-supplied fields — accepted for compatibility but never trusted for money. */
+    brandId?: string;
+    nameSnapshot?: string;
+    mrp?: number;
+    price?: number;
   }[];
 }
+
+type BrandTicketStatus = 'ACCEPTED' | 'PREPARING' | 'READY' | 'REJECTED';
+
+/** Allowed kitchen ticket transitions. Anything not listed here is rejected. */
+const TICKET_TRANSITIONS: Record<string, BrandTicketStatus[]> = {
+  SENT_TO_KITCHEN: ['ACCEPTED', 'REJECTED'],
+  ACCEPTED: ['PREPARING', 'REJECTED'],
+  PREPARING: ['READY', 'REJECTED'],
+  READY: [],
+  REJECTED: [],
+};
 
 @Injectable()
 export class OrdersService {
@@ -27,125 +57,261 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricingService: PricingService,
+    private readonly logisticsService: LogisticsService,
+    private readonly websocketsGateway: OrderTrackingGateway,
     @Inject(KITCHEN_QUEUE) private readonly kitchenQueue: Queue,
   ) {}
 
-  async createOrder(dto: CreateOrderDto) {
-    if (!dto.items || dto.items.length === 0) {
-      throw new BadRequestException('Cannot create order with an empty cart');
+  // ---------------------------------------------------------------------------
+  // Order creation
+  // ---------------------------------------------------------------------------
+
+  async createOrder(dto: CreateOrderDto, actor: AuthenticatedActor) {
+    const userId = actor?.sub;
+    if (!userId) {
+      throw new ForbiddenException('Authentication required');
     }
 
-    // Check if user is EatClub Member
-    const user = await this.prisma.user.findUnique({
-      where: { id: dto.userId },
-      include: { membership: true },
+    if (!dto?.items?.length) {
+      throw new BadRequestException('Cart is empty');
+    }
+    if (!dto.addressId) {
+      throw new BadRequestException('A delivery address is required');
+    }
+
+    // Normalise quantities. Duplicate lines for the same item are merged so a
+    // client cannot bypass per-item limits by repeating a line.
+    const requestedQty = new Map<string, number>();
+    for (const line of dto.items) {
+      if (!line?.menuItemId) {
+        throw new BadRequestException('Every cart line needs a menuItemId');
+      }
+      const qty = Number(line.quantity);
+      if (!Number.isInteger(qty) || qty <= 0) {
+        throw new BadRequestException('Quantity must be a positive whole number');
+      }
+      if (qty > 50) {
+        throw new BadRequestException('Quantity per item cannot exceed 50');
+      }
+      requestedQty.set(line.menuItemId, (requestedQty.get(line.menuItemId) || 0) + qty);
+    }
+
+    // The delivery address must belong to the caller.
+    const address = await this.prisma.address.findUnique({ where: { id: dto.addressId } });
+    if (!address) {
+      throw new NotFoundException('Delivery address not found');
+    }
+    if (address.userId !== userId) {
+      throw new ForbiddenException('This delivery address does not belong to you');
+    }
+
+    const hubId = dto.hubId || address.resolvedHubId;
+    if (!hubId) {
+      throw new BadRequestException('Could not resolve a delivery hub for this address');
+    }
+
+    const hub = await this.prisma.hub.findUnique({ where: { id: hubId }, select: { id: true } });
+    if (!hub) {
+      throw new BadRequestException('The selected hub does not exist');
+    }
+
+    // -------------------------------------------------------------------------
+    // Server-authoritative pricing: every rupee comes from the database.
+    // The client's `mrp` / `price` / `nameSnapshot` / `brandId` are ignored.
+    // -------------------------------------------------------------------------
+    const menuItemIds = [...requestedQty.keys()];
+    const dbItems = await this.prisma.menuItem.findMany({
+      where: { id: { in: menuItemIds } },
+      include: { brandKitchen: true },
     });
-    const isMember = user?.membership?.status === 'ACTIVE' || user?.membership?.status === 'TRIAL' || true; // Default member benefits in EatClub app
 
-    // Compute deterministic pricing using PricingService
-    // Map items to calculateCartPrice input (using MRP if provided, else price * 1.3)
-    const pricingInput = {
-      items: dto.items.map((i) => ({
-        price: i.mrp || Math.round(i.price * 1.3),
-        quantity: i.quantity,
+    const lines = menuItemIds.map((menuItemId) => {
+      const dbItem = dbItems.find((i) => i.id === menuItemId);
+      if (!dbItem) {
+        throw new BadRequestException('A cart item is no longer on the menu. Please refresh your cart.');
+      }
+      if (!dbItem.isAvailable) {
+        throw new ConflictException(`'${dbItem.name}' is currently out of stock (86'd).`);
+      }
+      if (!dbItem.brandKitchen) {
+        throw new BadRequestException(`'${dbItem.name}' is not attached to a kitchen.`);
+      }
+      if (dbItem.brandKitchen.hubId !== hubId) {
+        throw new BadRequestException(
+          `Cross-Hub Conflict: '${dbItem.name}' is not served from the selected hub.`,
+        );
+      }
+
+      return {
+        menuItemId: dbItem.id,
+        brandId: dbItem.brandKitchen.brandId,
+        nameSnapshot: dbItem.name,
+        mrpInPaise: dbItem.mrpInPaise,
+        // Defensive: a bad catalogue row must never make the member price exceed MRP.
+        memberPriceInPaise: Math.min(dbItem.memberPriceInPaise, dbItem.mrpInPaise),
+        quantity: requestedQty.get(menuItemId)!,
+      };
+    });
+
+    // Edge Case 9A (SDD §5.2 & §7.3): validate the offer window at checkout time.
+    const activeOffers = await this.pricingService.getActiveOffers();
+    const hasHappyHourCoupon = dto.couponCode && /HAPPY/i.test(dto.couponCode);
+    if (hasHappyHourCoupon && !activeOffers.isHappyHour) {
+      throw new ConflictException(
+        "Offer Expired: The 'Happy Hours' promotional discount has expired. Your cart prices have been re-evaluated to standard rates.",
+      );
+    }
+
+    const priceBreakdown = await this.pricingService.calculateCartPrice({
+      userId,
+      items: lines.map((l) => ({
+        price: l.mrpInPaise / 100,
+        memberPrice: l.memberPriceInPaise / 100,
+        quantity: l.quantity,
       })),
-      isMember,
       couponCode: dto.couponCode,
-      useWalletBalance: dto.useWalletBalance,
-    };
+      useWalletBalance: Math.max(0, Number(dto.useWalletBalance) || 0),
+    });
 
-    const priceBreakdown = await this.pricingService.calculateCartPrice(pricingInput);
+    // A coupon the customer saw in the cart must actually be honoured. Silently
+    // charging full price is a money-correctness bug, so reject instead.
+    if (dto.couponCode && priceBreakdown.couponInvalid) {
+      throw new BadRequestException(
+        `Coupon '${dto.couponCode}' is not valid for this cart. Remove it and try again.`,
+      );
+    }
 
+    const isMember = priceBreakdown.isMemberVerified;
     const mrpTotalPaise = Math.round(priceBreakdown.itemTotal * 100);
     const memberSavingsPaise = Math.round(priceBreakdown.memberDiscount * 100);
     const deliveryFeePaise = Math.round(priceBreakdown.deliveryFee * 100);
     const packagingFeePaise = Math.round(priceBreakdown.packagingFee * 100);
     const taxPaise = Math.round(priceBreakdown.taxes * 100);
+    const walletAppliedPaise = Math.round(priceBreakdown.walletApplied * 100);
     const finalPaidPaise = Math.round(priceBreakdown.finalPayable * 100);
 
-    // Group cart items by brandId for Multi-Brand Fan-Out
-    const itemsByBrand = new Map<string, typeof dto.items>();
-    for (const item of dto.items) {
-      const existing = itemsByBrand.get(item.brandId) || [];
-      existing.push(item);
-      itemsByBrand.set(item.brandId, existing);
+    const paymentMethod: PaymentMethod = dto.paymentMethod || 'UPI';
+    if (paymentMethod === 'WALLET' && finalPaidPaise > 0) {
+      throw new ConflictException(
+        'Your wallet balance does not cover this order. Choose another payment method or remove items.',
+      );
     }
 
-    this.logger.log(`🚀 Creating order fanning out across ${itemsByBrand.size} brand kitchen tickets. Final Payable: ₹${priceBreakdown.finalPayable}`);
+    // Group by the *database* brand id — never the one supplied by the client.
+    const itemsByBrand = new Map<string, typeof lines>();
+    for (const line of lines) {
+      const existing = itemsByBrand.get(line.brandId) || [];
+      existing.push(line);
+      itemsByBrand.set(line.brandId, existing);
+    }
 
-    // Execute atomic transaction for parent Order + N BrandOrders
+    this.logger.log(
+      `🚀 Creating order across ${itemsByBrand.size} brand kitchen ticket(s). Payable: ₹${
+        priceBreakdown.finalPayable
+      } (wallet ₹${priceBreakdown.walletApplied})`,
+    );
+
     const createdOrder = await this.prisma.$transaction(async (tx) => {
-      // 0. Stock Re-Validation (86 Check) and Cross-Hub Kitchen Validation
-      const itemIds = dto.items.map((i) => i.menuItemId);
-      const dbItems = await tx.menuItem.findMany({
-        where: { id: { in: itemIds } },
-        include: {
-          brandKitchen: true,
-        },
+      // Re-validate availability inside the transaction — an item can be 86'd
+      // between the pricing read above and the write below.
+      const freshItems = await tx.menuItem.findMany({
+        where: { id: { in: menuItemIds } },
+        select: { id: true, isAvailable: true },
       });
-
-      for (const cartItem of dto.items) {
-        const dbItem = dbItems.find((i) => i.id === cartItem.menuItemId);
-        if (!dbItem) {
-          throw new BadRequestException(`Item '${cartItem.nameSnapshot}' was not found.`);
-        }
-        if (!dbItem.isAvailable) {
-          throw new ConflictException(`Item '${cartItem.nameSnapshot}' is currently out of stock (86'd).`);
-        }
-        // Verify item belongs to a kitchen in the designated hub
-        if (dbItem.brandKitchen && dbItem.brandKitchen.hubId !== dto.hubId) {
-          throw new BadRequestException(
-            `Cross-Hub Conflict: Item '${cartItem.nameSnapshot}' is from hub '${dbItem.brandKitchen.hubId}', but order is pinned to hub '${dto.hubId}'.`,
-          );
+      for (const line of lines) {
+        const fresh = freshItems.find((i) => i.id === line.menuItemId);
+        if (!fresh || !fresh.isAvailable) {
+          throw new ConflictException(`'${line.nameSnapshot}' is currently out of stock (86'd).`);
         }
       }
 
-      // 1. Create parent Order
       const parentOrder = await tx.order.create({
         data: {
-          userId: dto.userId,
-          hubId: dto.hubId,
+          userId,
+          hubId,
           addressId: dto.addressId,
           mrpTotalPaise,
           memberSavingsPaise,
           deliveryFeePaise,
           packagingFeePaise,
           taxPaise,
+          walletAppliedPaise,
           finalPaidPaise,
+          paymentMethod,
           discountBreakdown: priceBreakdown.savingsSummary,
           status: 'PLACED',
         },
       });
 
-      // 2. Create BrandOrders for each virtual kitchen
-      for (const [brandId, brandItems] of itemsByBrand.entries()) {
+      for (const [brandId, brandLines] of itemsByBrand.entries()) {
         await tx.brandOrder.create({
           data: {
             orderId: parentOrder.id,
             brandId,
             status: 'SENT_TO_KITCHEN',
             items: {
-              create: brandItems.map((i) => ({
-                menuItemId: i.menuItemId,
-                nameSnapshot: i.nameSnapshot,
-                priceSnapshot: Math.round(i.price * 100),
-                quantity: i.quantity,
+              create: brandLines.map((l) => ({
+                menuItemId: l.menuItemId,
+                nameSnapshot: l.nameSnapshot,
+                mrpSnapshot: l.mrpInPaise,
+                priceSnapshot: isMember ? l.memberPriceInPaise : l.mrpInPaise,
+                quantity: l.quantity,
               })),
             },
           },
         });
       }
 
-      // 3. Create AuditLog entry for financial tracking
+      // Wallet money is only moved when it is actually being spent now:
+      //  - WALLET: the order is settled immediately.
+      //  - COD:    the wallet portion is settled up front, cash covers the rest.
+      //  - UPI/CARD: debited on verified payment success (see PaymentsService),
+      //    so abandoning the Razorpay modal no longer silently burns wallet credit.
+      // If wallet credit covers the entire bill there is nothing left for a
+      // gateway to charge, so settle it from the wallet even when the customer
+      // picked UPI/CARD. Otherwise the order would never become paid.
+      const walletCoversAll = walletAppliedPaise > 0 && finalPaidPaise === 0;
+      const isFreeOrder = walletAppliedPaise === 0 && finalPaidPaise === 0;
+
+      if (paymentMethod === 'WALLET' || paymentMethod === 'COD' || walletCoversAll) {
+        await this.debitWallet(tx, userId, walletAppliedPaise, parentOrder.id);
+
+        if (paymentMethod === 'WALLET' || walletCoversAll) {
+          await tx.payment.create({
+            data: {
+              orderId: parentOrder.id,
+              gateway: 'wallet',
+              status: 'SUCCESS',
+              amountInPaise: walletAppliedPaise,
+            },
+          });
+        }
+      }
+
+      // A ₹0 order (100% coupon) still needs a settled payment row so the
+      // kitchen payment gate does not block it forever.
+      if (isFreeOrder && !['WALLET', 'COD'].includes(paymentMethod)) {
+        await tx.payment.create({
+          data: {
+            orderId: parentOrder.id,
+            gateway: 'wallet',
+            status: 'SUCCESS',
+            amountInPaise: 0,
+          },
+        });
+      }
+
       await tx.auditLog.create({
         data: {
           action: 'ORDER_CREATED',
-          actorId: dto.userId,
+          actorId: userId,
           recordId: parentOrder.id,
           diff: {
             finalPaidPaise,
             mrpTotalPaise,
             memberSavingsPaise,
+            walletAppliedPaise,
+            paymentMethod,
             brandCount: itemsByBrand.size,
           },
         },
@@ -154,27 +320,59 @@ export class OrdersService {
       return tx.order.findUnique({
         where: { id: parentOrder.id },
         include: {
-          brandOrders: {
-            include: {
-              items: true,
-            },
-          },
+          brandOrders: { include: { items: true } },
           address: true,
           hub: true,
+          payment: true,
         },
       });
     });
 
-    // Post-transaction: Enqueue BullMQ jobs for asynchronous kitchen notifications
-    if (createdOrder && createdOrder.brandOrders) {
+    // Post-transaction: referral bonus on the user's first-ever order.
+    if (createdOrder) {
+      try {
+        const [orderCount, userRecord] = await Promise.all([
+          this.prisma.order.count({ where: { userId } }),
+          this.prisma.user.findUnique({ where: { id: userId }, select: { referredById: true } }),
+        ]);
+
+        if (orderCount === 1 && userRecord?.referredById) {
+          const referrerId = userRecord.referredById;
+          const REFERRAL_BONUS_PAISE = 10000; // ₹100
+
+          await this.prisma.$transaction(async (bonusTx) => {
+            await bonusTx.user.update({
+              where: { id: referrerId },
+              data: { walletBalance: { increment: REFERRAL_BONUS_PAISE } },
+            });
+            await bonusTx.walletTransaction.create({
+              data: {
+                userId: referrerId,
+                amountInPaise: REFERRAL_BONUS_PAISE,
+                reason: 'REFERRAL_BONUS',
+                orderId: createdOrder.id,
+              },
+            });
+          });
+
+          this.logger.log(
+            `🎁 Referral bonus ₹100 credited to ${referrerId} for ${userId}'s first order ${createdOrder.id}`,
+          );
+        }
+      } catch (refErr: any) {
+        this.logger.warn(`Referral bonus trigger failed for order ${createdOrder?.id}: ${refErr.message}`);
+      }
+    }
+
+    // Post-transaction: enqueue kitchen jobs.
+    if (createdOrder?.brandOrders) {
       for (const brandOrder of createdOrder.brandOrders) {
         try {
           await this.kitchenQueue.add('brand_order.created', {
-            hubId: dto.hubId,
+            hubId,
             orderId: createdOrder.id,
             brandOrder,
           });
-          this.logger.log(`🐂 Enqueued BullMQ job 'brand_order.created' for ticket ${brandOrder.id}`);
         } catch (queueErr: any) {
           this.logger.warn(`Failed to enqueue BullMQ job: ${queueErr.message}`);
         }
@@ -184,18 +382,206 @@ export class OrdersService {
     return createdOrder;
   }
 
-  async getOrderById(orderId: string) {
+  /**
+   * Debits the wallet under a row lock. Caller must already be inside a transaction.
+   */
+  private async debitWallet(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    amountPaise: number,
+    orderId: string,
+  ) {
+    if (amountPaise <= 0) return;
+
+    await tx.$executeRaw`SELECT "walletBalance" FROM "users" WHERE id = ${userId} FOR UPDATE`;
+
+    const lockedUser = await tx.user.findUnique({
+      where: { id: userId },
+      select: { walletBalance: true },
+    });
+
+    if (!lockedUser || lockedUser.walletBalance < amountPaise) {
+      throw new ConflictException(
+        `Insufficient wallet balance: you have ₹${Math.round(
+          (lockedUser?.walletBalance ?? 0) / 100,
+        )} but this order needs ₹${Math.round(amountPaise / 100)}.`,
+      );
+    }
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { walletBalance: { decrement: amountPaise } },
+    });
+
+    await tx.walletTransaction.create({
+      data: {
+        userId,
+        amountInPaise: -amountPaise,
+        reason: 'ORDER_SPEND',
+        orderId,
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cancellation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Cancels an order that has not been paid and has not entered the kitchen.
+   *
+   * Checkout calls this when the customer dismisses the Razorpay modal or the
+   * payment fails, so an abandoned attempt does not leave a live, unpaid order
+   * sitting in the dispatch queue. Paid orders are deliberately rejected here:
+   * they need the refund flow, not a silent cancellation.
+   */
+  async cancelUnpaidOrder(orderId: string, actor: AuthenticatedActor, reason?: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { payment: true, brandOrders: true, deliveryTrip: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order ${orderId} not found`);
+    }
+
+    if (actor?.role !== 'ADMIN' && order.userId !== actor?.sub) {
+      throw new ForbiddenException('You can only cancel your own orders');
+    }
+
+    if (order.status === 'CANCELLED') {
+      return order;
+    }
+
+    if (order.payment?.status === 'SUCCESS') {
+      throw new ConflictException(
+        'This order is already paid. Contact support for a refund instead of cancelling.',
+      );
+    }
+
+    const kitchenStarted = order.brandOrders.some((ticket) =>
+      ['ACCEPTED', 'PREPARING', 'READY'].includes(ticket.status),
+    );
+    if (kitchenStarted) {
+      throw new ConflictException('The kitchen has already started this order.');
+    }
+
+    if (
+      order.deliveryTrip &&
+      !['UNASSIGNED', 'CANCELLED'].includes(order.deliveryTrip.status)
+    ) {
+      throw new ConflictException('A rider is already handling this order.');
+    }
+
+    const cancelled = await this.prisma.$transaction(async (tx) => {
+      // If wallet money was debited at creation (COD), put it back. For UPI /
+      // CARD the wallet is only debited on verified payment success, so there
+      // is nothing to refund here.
+      const walletSpend = await tx.walletTransaction.findFirst({
+        where: { orderId, reason: 'ORDER_SPEND' },
+      });
+
+      if (walletSpend && order.walletAppliedPaise > 0) {
+        await tx.user.update({
+          where: { id: order.userId },
+          data: { walletBalance: { increment: order.walletAppliedPaise } },
+        });
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: order.userId,
+            amountInPaise: order.walletAppliedPaise,
+            reason: 'ORDER_REFUND',
+            orderId,
+          },
+        });
+      }
+
+      await tx.brandOrder.updateMany({
+        where: {
+          orderId,
+          status: { in: ['SENT_TO_KITCHEN', 'ACCEPTED', 'PREPARING', 'READY'] },
+        },
+        data: {
+          status: 'REJECTED',
+          rejectedAt: new Date(),
+          rejectReason: reason || 'Cancelled before preparation',
+        },
+      });
+
+      if (order.payment) {
+        await tx.payment.update({
+          where: { orderId },
+          data: { status: 'FAILED' },
+        });
+      }
+
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 'CANCELLED',
+          finalPaidPaise: 0,
+          walletAppliedPaise: 0,
+        },
+        include: {
+          brandOrders: { include: { items: true } },
+          address: true,
+          hub: true,
+          payment: true,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'ORDER_CANCELLED_UNPAID',
+          actorId: actor?.sub,
+          recordId: orderId,
+          diff: {
+            reason: reason || 'Customer abandoned payment',
+            refundedWalletPaise: walletSpend ? order.walletAppliedPaise : 0,
+          },
+        },
+      });
+
+      return updated;
+    });
+
+    this.websocketsGateway.emitOrderStatusUpdate(orderId, 'CANCELLED', {
+      orderId,
+      status: 'CANCELLED',
+      reason: reason || 'Cancelled before payment',
+    });
+
+    return cancelled;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reads
+  // ---------------------------------------------------------------------------
+
+  async getOrderById(orderId: string, actor: AuthenticatedActor) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
-        brandOrders: {
-          include: {
-            items: true,
-          },
-        },
+        brandOrders: { include: { items: true } },
         address: true,
         hub: true,
-        deliveryTrip: true,
+        payment: true,
+        deliveryTrip: {
+          include: {
+            rider: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+                rating: true,
+                liveLat: true,
+                liveLng: true,
+                vehicleType: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -203,47 +589,349 @@ export class OrdersService {
       throw new NotFoundException(`Order ${orderId} not found`);
     }
 
+    this.assertCanViewOrder(order, actor);
     return order;
   }
 
-  async updateBrandOrderStatus(brandOrderId: string, status: 'ACCEPTED' | 'PREPARING' | 'READY' | 'REJECTED') {
-    const brandOrder = await this.prisma.brandOrder.update({
-      where: { id: brandOrderId },
-      data: {
-        status: status as any,
-        ...(status === 'REJECTED' ? { rejectedAt: new Date(), rejectReason: 'Kitchen Out of Stock' } : {}),
-      },
-      include: { order: true, items: true },
-    });
-
-    // If a kitchen rejects an order, instantly issue partial refund to customer wallet
-    if (status === 'REJECTED') {
-      const refundPaise = brandOrder.items.reduce((sum, i) => sum + i.priceSnapshot * i.quantity, 0);
-      await this.prisma.walletTransaction.create({
-        data: {
-          userId: brandOrder.order.userId,
-          amountInPaise: refundPaise,
-          reason: 'PARTIAL_ORDER_REFUND',
-          orderId: brandOrder.orderId,
-        },
-      });
-      this.logger.warn(`💸 Brand Order ${brandOrder.id} rejected. Issued ₹${refundPaise / 100} wallet refund.`);
+  async getUserOrders(userId: string, actor: AuthenticatedActor) {
+    if (actor?.role !== 'ADMIN' && actor?.sub !== userId) {
+      throw new ForbiddenException('You can only view your own orders');
     }
 
-    return brandOrder;
-  }
-
-  async getUserOrders(userId: string) {
     return this.prisma.order.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
       include: {
-        brandOrders: {
+        brandOrders: { include: { items: true } },
+        address: true,
+        hub: true,
+        payment: true,
+        deliveryTrip: {
           include: {
-            items: true,
+            rider: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+                rating: true,
+                liveLat: true,
+                liveLng: true,
+                vehicleType: true,
+              },
+            },
           },
         },
       },
     });
+  }
+
+  private assertCanViewOrder(
+    order: {
+      userId: string;
+      hubId: string;
+      brandOrders: { brandId: string }[];
+      deliveryTrip?: { riderId: string | null } | null;
+    },
+    actor: AuthenticatedActor,
+  ) {
+    const role = actor?.role || 'CUSTOMER';
+
+    if (role === 'ADMIN') return;
+    if (order.userId === actor.sub) return;
+
+    if (role === 'RIDER' && order.deliveryTrip?.riderId === actor.sub) return;
+
+    if (
+      (role === 'HUB_STAFF' || role === 'HUB_MANAGER') &&
+      actor.scopedHubId &&
+      order.hubId === actor.scopedHubId
+    ) {
+      return;
+    }
+
+    if (
+      role === 'BRAND_OPS' &&
+      actor.scopedBrandId &&
+      order.brandOrders.some((bo) => bo.brandId === actor.scopedBrandId)
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('You do not have access to this order');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Kitchen ticket state machine
+  // ---------------------------------------------------------------------------
+
+  async updateBrandOrderStatus(
+    brandOrderId: string,
+    status: BrandTicketStatus,
+    actor: AuthenticatedActor,
+    rejectReason?: string,
+  ) {
+    const VALID_STATUSES: BrandTicketStatus[] = ['ACCEPTED', 'PREPARING', 'READY', 'REJECTED'];
+    if (!VALID_STATUSES.includes(status)) {
+      throw new BadRequestException(`Unknown ticket status '${status}'`);
+    }
+
+    const brandOrder = await this.prisma.brandOrder.findUnique({
+      where: { id: brandOrderId },
+      include: { order: true, items: true },
+    });
+
+    if (!brandOrder) {
+      throw new NotFoundException(`Brand ticket ${brandOrderId} not found`);
+    }
+
+    this.assertCanManageTicket(brandOrder, actor);
+
+    const allowed = TICKET_TRANSITIONS[brandOrder.status] || [];
+    if (!allowed.includes(status)) {
+      throw new ConflictException(
+        `Ticket ${brandOrderId} cannot move from ${brandOrder.status} to ${status}`,
+      );
+    }
+
+    if (status === 'REJECTED') {
+      return this.rejectBrandOrder(brandOrder, actor, rejectReason);
+    }
+
+    // Payment gate: the kitchen must never cook an order that has not been settled.
+    const payment = await this.prisma.payment.findUnique({
+      where: { orderId: brandOrder.orderId },
+      select: { status: true },
+    });
+    const isSettled = payment?.status === 'SUCCESS' || brandOrder.order.paymentMethod === 'COD';
+    if (!isSettled) {
+      throw new ConflictException(
+        'This order has not been paid yet — the kitchen cannot start preparing it.',
+      );
+    }
+
+    const updated = await this.prisma.brandOrder.update({
+      where: { id: brandOrderId },
+      data: { status },
+      include: { order: true, items: true },
+    });
+
+    // Emit the KDS update to the kitchen room.
+    this.websocketsGateway.emitKdsTicketUpdate(updated.order.hubId, updated);
+
+    // Gate: assign a rider once every live ticket has been accepted.
+    const siblings = await this.prisma.brandOrder.findMany({
+      where: { orderId: brandOrder.orderId },
+      select: { status: true },
+    });
+
+    const liveTickets = siblings.filter((bo) => bo.status !== 'REJECTED');
+    const allAccepted =
+      liveTickets.length > 0 &&
+      liveTickets.every((bo) => ['ACCEPTED', 'PREPARING', 'READY'].includes(bo.status));
+
+    if (allAccepted) {
+      await this.prisma.order.update({
+        where: { id: brandOrder.orderId },
+        data: { status: 'PREPARING' },
+      });
+
+      const tripResult = await this.logisticsService.autoAssignRider(brandOrder.orderId);
+
+      this.websocketsGateway.emitOrderStatusUpdate(brandOrder.orderId, 'PREPARING', {
+        orderId: brandOrder.orderId,
+        status: 'PREPARING',
+        riderAssigned: !!tripResult?.trip,
+        trip: tripResult?.trip,
+      });
+    } else {
+      this.websocketsGateway.emitOrderStatusUpdate(brandOrder.orderId, 'TICKET_UPDATED', {
+        orderId: brandOrder.orderId,
+        brandOrderId,
+        status,
+      });
+    }
+
+    return updated;
+  }
+
+  private assertCanManageTicket(
+    brandOrder: { brandId: string; order: { hubId: string } },
+    actor: AuthenticatedActor,
+  ) {
+    const role = actor?.role || 'CUSTOMER';
+
+    if (role === 'ADMIN') return;
+
+    if (role === 'BRAND_OPS' && actor.scopedBrandId === brandOrder.brandId) return;
+
+    if (
+      (role === 'HUB_STAFF' || role === 'HUB_MANAGER') &&
+      actor.scopedHubId &&
+      actor.scopedHubId === brandOrder.order.hubId
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('You cannot manage this kitchen ticket');
+  }
+
+  /**
+   * Rejects a ticket and refunds the customer.
+   *
+   * Money rules:
+   *  - The transition table guarantees a ticket can only be rejected once, so
+   *    repeated calls cannot mint wallet credit.
+   *  - A refund is only issued when money was actually collected (a successful
+   *    payment or a real wallet debit). An unpaid, abandoned order gets its
+   *    totals reduced instead of receiving free wallet credit.
+   *  - The status update, refund, and total recalculation are one transaction.
+   */
+  private async rejectBrandOrder(
+    brandOrder: Prisma.BrandOrderGetPayload<{ include: { order: true; items: true } }>,
+    actor: AuthenticatedActor,
+    rejectReason?: string,
+  ) {
+    const orderId = brandOrder.orderId;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.brandOrder.update({
+        where: { id: brandOrder.id },
+        data: {
+          status: 'REJECTED',
+          rejectedAt: new Date(),
+          rejectReason: rejectReason || 'Kitchen Out of Stock',
+        },
+        include: { order: true, items: true },
+      });
+
+      const siblings = await tx.brandOrder.findMany({
+        where: { orderId },
+        select: { id: true, status: true },
+      });
+      const allRejected = siblings.every((bo) => bo.status === 'REJECTED');
+
+      const [successfulPayment, walletSpend] = await Promise.all([
+        tx.payment.findUnique({ where: { orderId } }),
+        tx.walletTransaction.findFirst({ where: { orderId, reason: 'ORDER_SPEND' } }),
+      ]);
+
+      // Refund only money that was actually collected. For COD, the cash
+      // portion is not collected until delivery — refunding finalPaidPaise
+      // would mint wallet credit out of thin air. A synthetic wallet payment
+      // already represents the wallet debit, so it must not be counted twice.
+      let collectedPaise = 0;
+      if (successfulPayment?.status === 'SUCCESS') {
+        collectedPaise += successfulPayment.amountInPaise;
+        if (successfulPayment.gateway !== 'wallet' && walletSpend) {
+          collectedPaise += updated.order.walletAppliedPaise;
+        }
+      } else if (walletSpend) {
+        collectedPaise += updated.order.walletAppliedPaise;
+      }
+      const moneyCollected = collectedPaise > 0;
+
+      const itemRefundPaise = updated.items.reduce(
+        (sum, item) => sum + item.priceSnapshot * item.quantity,
+        0,
+      );
+      const mrpReductionPaise = updated.items.reduce(
+        (sum, item) => sum + (item.mrpSnapshot || item.priceSnapshot) * item.quantity,
+        0,
+      );
+      const savingsReductionPaise = Math.max(0, mrpReductionPaise - itemRefundPaise);
+
+      // Full rejection refunds everything actually collected. Partial rejection
+      // can never refund more than was collected.
+      const refundPaise = allRejected
+        ? collectedPaise
+        : Math.min(itemRefundPaise, collectedPaise);
+
+      if (moneyCollected && refundPaise > 0) {
+        await tx.user.update({
+          where: { id: updated.order.userId },
+          data: { walletBalance: { increment: refundPaise } },
+        });
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: updated.order.userId,
+            amountInPaise: refundPaise,
+            reason: allRejected ? 'ORDER_REFUND' : 'PARTIAL_ORDER_REFUND',
+            orderId,
+          },
+        });
+      }
+
+      const newFinalPaidPaise = allRejected
+        ? 0
+        : Math.max(0, updated.order.finalPaidPaise - itemRefundPaise);
+      const newWalletAppliedPaise = allRejected ? 0 : updated.order.walletAppliedPaise;
+      const newMrpTotalPaise = Math.max(0, updated.order.mrpTotalPaise - mrpReductionPaise);
+      const newMemberSavingsPaise = Math.max(
+        0,
+        updated.order.memberSavingsPaise - savingsReductionPaise,
+      );
+
+      const order = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          finalPaidPaise: newFinalPaidPaise,
+          walletAppliedPaise: newWalletAppliedPaise,
+          mrpTotalPaise: newMrpTotalPaise,
+          memberSavingsPaise: newMemberSavingsPaise,
+          status: allRejected ? 'CANCELLED' : updated.order.status,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: allRejected ? 'ORDER_CANCELLED_KITCHEN_REJECT' : 'BRAND_ORDER_REJECTED',
+          actorId: actor?.sub,
+          recordId: orderId,
+          diff: {
+            brandOrderId: updated.id,
+            brandId: updated.brandId,
+            refundPaise,
+            moneyCollected,
+            allRejected,
+            rejectReason: updated.rejectReason,
+          },
+        },
+      });
+
+      return { updated, order, refundPaise, allRejected, moneyCollected };
+    });
+
+    this.logger.warn(
+      `💸 Ticket ${result.updated.id} rejected (${result.updated.brandId}). ` +
+        `Refund ₹${result.refundPaise / 100} (collected=${result.moneyCollected}, allRejected=${result.allRejected}). ` +
+        `Order ${orderId} payable is now ₹${result.order.finalPaidPaise / 100}`,
+    );
+
+    this.websocketsGateway.emitOrderStatusUpdate(
+      orderId,
+      result.allRejected ? 'CANCELLED' : 'PARTIAL_REFUND',
+      {
+        orderId,
+        brandOrderId: result.updated.id,
+        brandId: result.updated.brandId,
+        refundPaise: result.refundPaise,
+        refundRupees: result.refundPaise / 100,
+        newFinalPaidPaise: result.order.finalPaidPaise,
+        newFinalPaidRupees: result.order.finalPaidPaise / 100,
+        allRejected: result.allRejected,
+        rejectReason: result.updated.rejectReason,
+      },
+    );
+
+    this.websocketsGateway.emitBrandOrderRejected(orderId, result.updated.brandId, {
+      orderId,
+      brandOrderId: result.updated.id,
+      brandId: result.updated.brandId,
+      rejectReason: result.updated.rejectReason,
+      refundPaise: result.refundPaise,
+    });
+
+    return result.updated;
   }
 }

@@ -45,6 +45,8 @@ export const RestaurantView: React.FC<RestaurantViewProps> = ({
             minOrderValue: 149,
             categories: apiBrand.cuisine || ['All'],
             isAvailable: apiBrand.isActive ?? true,
+            isOwned: apiBrand.isOwned ?? true,
+            commissionPct: apiBrand.commissionPct,
           });
         }
 

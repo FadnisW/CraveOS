@@ -1,8 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile } from '../types';
-import { MOCK_USER } from '../data/mockData';
+import { SavedAddress, UserProfile } from '../types';
 
 interface UserContextType {
   user: UserProfile | null;
@@ -11,9 +10,85 @@ interface UserContextType {
   isMounted: boolean;
   login: (user: any, token: string) => void;
   logout: () => void;
+  refreshUser: (user: any) => void;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
+
+/** Bumped whenever the persisted user shape changes. */
+const USER_SCHEMA_VERSION = 2;
+
+function normaliseAddress(raw: any): SavedAddress {
+  const type = String(raw?.type || 'home').toLowerCase();
+
+  return {
+    id: raw?.id || '',
+    type: type === 'work' ? 'work' : type === 'other' ? 'other' : 'home',
+    label: raw?.label || 'Home',
+    addressLine: raw?.addressLine || '',
+    landmark: raw?.landmark || undefined,
+    city: raw?.city || 'Bengaluru',
+    pincode: raw?.pincode || '',
+    lat: Number(raw?.lat) || 0,
+    lng: Number(raw?.lng) || 0,
+    resolvedHubId: raw?.resolvedHubId || '',
+    isDefault: !!raw?.isDefault,
+  };
+}
+
+/**
+ * The API stores money in paise and memberships as a relation. The storefront
+ * renders rupees and a boolean. Normalising here keeps every screen honest —
+ * previously a ₹100 balance was displayed as ₹10,000.
+ */
+function normaliseUser(raw: any): UserProfile {
+  if (!raw) {
+    throw new Error('Cannot normalise an empty user');
+  }
+
+  const membership = raw.membership;
+  const membershipExpiry = membership?.renewsAt || membership?.trialEndsAt || null;
+  const membershipActive =
+    !!membership &&
+    ['TRIAL', 'ACTIVE'].includes(membership.status) &&
+    (!membershipExpiry || new Date(membershipExpiry).getTime() > Date.now());
+
+  const isMember =
+    typeof raw.isMember === 'boolean' ? raw.isMember : membershipActive;
+
+  const membershipPlan =
+    raw.membershipPlan ||
+    (membership
+      ? {
+          type: membership.status === 'TRIAL' ? 'trial' : 'annual',
+          expiresAt: membershipExpiry || '',
+          totalSavingsToDate: 0,
+        }
+      : undefined);
+
+  const walletBalance =
+    typeof raw.walletBalanceRupees === 'number'
+      ? raw.walletBalanceRupees
+      : Math.round(Number(raw.walletBalance) || 0) / 100;
+
+  const addresses = (raw.savedAddresses || raw.addresses || []).map(normaliseAddress);
+
+  return {
+    id: raw.id,
+    name: raw.name || raw.email?.split('@')[0] || 'Member',
+    email: raw.email || '',
+    phone: raw.phone || '',
+    role: raw.role,
+    adminSubRole: raw.adminSubRole,
+    scopedHubId: raw.scopedHubId,
+    scopedBrandId: raw.scopedBrandId,
+    isMember,
+    membershipPlan,
+    walletBalance,
+    referralCode: raw.referralCode || '',
+    savedAddresses: addresses,
+  };
+}
 
 export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Always start as null/false to match SSR — localStorage is read only after mount
@@ -29,12 +104,16 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (savedToken && savedUser) {
       try {
         const parsed = JSON.parse(savedUser);
-        setUser({
-          ...parsed,
-          isMember: parsed.isMember ?? true,
-          savedAddresses: parsed.savedAddresses || parsed.addresses || MOCK_USER.savedAddresses,
-        });
-        setToken(savedToken);
+
+        if (parsed.schemaVersion !== USER_SCHEMA_VERSION) {
+          // Old sessions may hold raw paise and a fake membership. Force a
+          // clean sign-in rather than rendering wrong balances.
+          localStorage.removeItem('eatclub_token');
+          localStorage.removeItem('eatclub_user');
+        } else {
+          setUser(parsed.user);
+          setToken(savedToken);
+        }
       } catch (e) {
         localStorage.removeItem('eatclub_token');
         localStorage.removeItem('eatclub_user');
@@ -44,27 +123,24 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsMounted(true);
   }, []);
 
-  const login = (loggedUser: any, accessToken: string) => {
-    const formattedUser: UserProfile = {
-      id: loggedUser.id || 'usr_' + Date.now(),
-      name: loggedUser.name || loggedUser.email?.split('@')[0] || 'Member',
-      email: loggedUser.email || '',
-      phone: loggedUser.phone || '+919876543210',
-      isMember: loggedUser.isMember ?? true,
-      membershipPlan: loggedUser.membershipPlan || {
-        type: 'annual',
-        expiresAt: '2027-12-31',
-        totalSavingsToDate: 1250,
-      },
-      walletBalance: loggedUser.walletBalance ?? 100,
-      referralCode: loggedUser.referralCode || `REF-${Math.floor(100000 + Math.random() * 900000)}`,
-      savedAddresses: loggedUser.savedAddresses || loggedUser.addresses || MOCK_USER.savedAddresses,
-    };
-
-    setUser(formattedUser);
+  const persist = (nextUser: UserProfile, accessToken: string) => {
+    setUser(nextUser);
     setToken(accessToken);
     localStorage.setItem('eatclub_token', accessToken);
-    localStorage.setItem('eatclub_user', JSON.stringify(formattedUser));
+    localStorage.setItem(
+      'eatclub_user',
+      JSON.stringify({ schemaVersion: USER_SCHEMA_VERSION, user: nextUser }),
+    );
+  };
+
+  const login = (loggedUser: any, accessToken: string) => {
+    persist(normaliseUser(loggedUser), accessToken);
+  };
+
+  const refreshUser = (rawUser: any) => {
+    const currentToken = token || localStorage.getItem('eatclub_token');
+    if (!currentToken) return;
+    persist(normaliseUser(rawUser), currentToken);
   };
 
   const logout = () => {
@@ -83,6 +159,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isMounted,
         login,
         logout,
+        refreshUser,
       }}
     >
       {children}

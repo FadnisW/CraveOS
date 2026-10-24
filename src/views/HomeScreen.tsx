@@ -7,7 +7,7 @@ import { useCart } from '../context/CartContext';
 import { SpotlightCard } from '../components/SpotlightCard';
 import { SplitText } from '../components/SplitText';
 import { api } from '../lib/api-client';
-import { Sparkles, Clock, ShieldCheck, Plus, Check, Star, ArrowRight, Flame, Heart, Zap, Loader2, ChevronLeft, ChevronRight, Lock, Tag, Calendar } from 'lucide-react';
+import { Sparkles, Clock, ShieldCheck, Plus, Check, Star, ArrowRight, Flame, Heart, Zap, Loader2, ChevronLeft, ChevronRight, Lock, Tag, Calendar, MapPinOff, Mail, Send, CheckCircle2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface HomeScreenProps {
@@ -29,6 +29,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [brands, setBrands] = useState<Brand[]>(MOCK_BRANDS);
   const [menuItems, setMenuItems] = useState<MenuItem[]>(MOCK_MENU_ITEMS);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [activeOffersData, setActiveOffersData] = useState<any>(null);
+  const [countdownStr, setCountdownStr] = useState<string>('');
+  const [isServiceableArea, setIsServiceableArea] = useState<boolean>(true);
+  const [notifyEmail, setNotifyEmail] = useState<string>('');
+  const [isNotifySubmitted, setIsNotifySubmitted] = useState<boolean>(false);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -43,10 +48,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     async function loadData() {
       try {
         setIsLoading(true);
-        const [apiBrands, apiItems] = await Promise.all([
+        const [apiBrands, apiItems, apiOffers, serviceability] = await Promise.all([
           api.getBrands().catch(() => null),
           api.getMenuItems().catch(() => null),
+          api.getActiveOffers().catch(() => null),
+          api.resolveServiceability(12.9121, 77.6445).catch(() => null),
         ]);
+
+        if (serviceability && serviceability.isServiceable === false) {
+          setIsServiceableArea(false);
+        } else {
+          setIsServiceableArea(true);
+        }
+
+        if (apiOffers) {
+          setActiveOffersData(apiOffers);
+        }
 
         if (apiBrands && Array.isArray(apiBrands) && apiBrands.length > 0) {
           const mappedBrands: Brand[] = apiBrands.map((b: any) => {
@@ -64,6 +81,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               minOrderValue: b.minOrderValue || fallback.minOrderValue || 149,
               categories: b.cuisine || fallback.categories,
               isAvailable: b.isActive ?? true,
+              isOwned: b.isOwned ?? fallback.isOwned ?? true,
+              commissionPct: b.commissionPct ?? fallback.commissionPct,
             };
           });
           setBrands(mappedBrands);
@@ -72,18 +91,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         if (apiItems && Array.isArray(apiItems) && apiItems.length > 0) {
           const mappedItems: MenuItem[] = apiItems.map((i: any) => ({
             id: i.id,
-            brandId: i.brandKitchen?.brand?.slug || 'box8',
-            availableHubIds: (i.brandKitchen?.brand?.brandKitchens ?? []).map((bk: { hubId: string }) => bk.hubId).filter(Boolean),
+            brandId: i.brandId,
             name: i.name,
-            description: i.description || i.name,
-            mrp: Math.round((i.priceInPaise || 30000) / 100 * 1.3),
-            memberPrice: Math.round((i.priceInPaise || 20000) / 100),
-            image: i.image || 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=500&auto=format&fit=crop&q=80',
+            description: i.description || 'Prepared fresh at our cloud kitchen hub',
+            mrp: i.mrp || Math.round(i.price * 1.3),
+            memberPrice: i.price,
+            image: i.imageUrl || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=500&auto=format&fit=crop&q=80',
             isVeg: i.isVeg ?? true,
-            isBestseller: true,
+            isBestseller: i.isBestseller ?? false,
             category: i.category || 'Popular',
-            rating: 4.7,
+            rating: 4.8,
             isAvailable: i.isAvailable ?? true,
+            availableHubIds: i.availableHubIds || ['hub-hsr-01'],
           }));
           setMenuItems(mappedItems);
         }
@@ -96,14 +115,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     loadData();
   }, []);
 
-  // Time-Bound & Day-Bound Real-time applicability checks
-  const now = new Date();
-  const currentHour = now.getHours();
-  const currentDay = now.getDay(); // 0 = Sun, 3 = Wed
+  // Dynamic live countdown timer for active time-bound offer (SDD §5.2)
+  useEffect(() => {
+    if (!activeOffersData?.happyHour?.endsAt) return;
+    const interval = setInterval(() => {
+      const ends = new Date(activeOffersData.happyHour.endsAt).getTime();
+      const now = Date.now();
+      const diff = Math.max(0, ends - now);
+      const hrs = Math.floor(diff / 3600000);
+      const mins = Math.floor((diff % 3600000) / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      setCountdownStr(
+        `${hrs > 0 ? `${hrs.toString().padStart(2, '0')}h ` : ''}${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`,
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeOffersData]);
 
-  const isHappyHoursActive = currentHour >= 16 && currentHour < 18;
-  const isWednesdayActive = currentDay === 3;
-  const isLateNightActive = currentHour >= 23 || currentHour < 3;
+  // Server API-driven offer applicability flags (no hardcoded device clock checks)
+  const isHappyHoursActive = activeOffersData?.isHappyHour ?? false;
+  const isWednesdayActive = activeOffersData?.isWednesdayMania ?? false;
+  const isLateNightActive = activeOffersData?.isLateNight ?? false;
 
   const mindScrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -187,7 +219,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       id: 'happy-hours',
       type: 'time-bound',
       title: 'HAPPY HOURS',
-      subtitle: '4-6 PM',
+      subtitle: countdownStr ? `ENDS IN ${countdownStr}` : '4-6 PM',
       badge: '50% OFF',
       image: '/offer-happy-hours.png',
       isActive: isHappyHoursActive,
@@ -229,6 +261,68 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const packagingSavedPerOrder = 25;
   const totalSavedPerOrder = memberDiscountPerOrder + deliverySavedPerOrder + packagingSavedPerOrder;
   const annualSavings = Math.round(totalSavedPerOrder * savingsOrdersPerMonth * 12);
+
+  if (!isServiceableArea) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-8">
+        <div className="w-24 h-24 rounded-3xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center font-black text-4xl mx-auto border border-rose-500/20 shadow-xl shadow-rose-500/10">
+          <MapPinOff className="w-12 h-12" />
+        </div>
+
+        <div className="space-y-3">
+          <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-xs font-bold uppercase tracking-wider">
+            Unserviceable Location
+          </span>
+          <h2 className="text-3xl sm:text-4xl font-black text-gray-900 dark:text-white tracking-tight">
+            Eatclub Isn't in Your Area Yet!
+          </h2>
+          <p className="text-sm text-gray-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+            Our multi-brand cloud kitchen hubs are rapidly expanding. Enter your email below to be the first notified when we launch delivery in your neighborhood!
+          </p>
+        </div>
+
+        {/* Email Lead Capture Box (Task 12 / SDD §7.2) */}
+        <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 shadow-xl space-y-4 max-w-md mx-auto">
+          {isNotifySubmitted ? (
+            <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 flex items-center justify-center gap-2 font-bold text-xs">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Thank you! We'll notify you as soon as Eatclub arrives in your area.</span>
+            </div>
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (notifyEmail.trim()) {
+                  setIsNotifySubmitted(true);
+                }
+              }}
+              className="space-y-3"
+            >
+              <div className="relative">
+                <Mail className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
+                <input
+                  type="email"
+                  required
+                  placeholder="Enter your email address"
+                  value={notifyEmail}
+                  onChange={(e) => setNotifyEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 rounded-2xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold focus:outline-none focus:border-rose-500 text-gray-900 dark:text-white"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-lg shadow-rose-600/30 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+                <span>Notify Me When You Arrive</span>
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-10 pb-16">
