@@ -38,11 +38,14 @@ export const RestaurantView: React.FC<RestaurantViewProps> = ({
             tagline: apiBrand.cuisine?.join(', ') || 'Desi Meals & Specialties',
             logo: apiBrand.logoUrl || MOCK_BRANDS[0].logo,
             heroImage: apiBrand.heroImageUrl || MOCK_BRANDS[0].heroImage,
-            themeColor: '#E11D48',
+            themeColor: apiBrand.themeColor || '#E11D48',
             rating: 4.7,
             totalRatings: 18000,
             deliveryTimeMins: 22,
-            minOrderValue: 149,
+            minOrderValue:
+              Number(apiBrand.minOrderValue) > 0
+                ? Math.round(Number(apiBrand.minOrderValue) / 100)
+                : 149,
             categories: apiBrand.cuisine || ['All'],
             isAvailable: apiBrand.isActive ?? true,
             isOwned: apiBrand.isOwned ?? true,
@@ -57,9 +60,16 @@ export const RestaurantView: React.FC<RestaurantViewProps> = ({
             availableHubIds: (i.brandKitchen?.brand?.brandKitchens ?? []).map((bk: { hubId: string }) => bk.hubId).filter(Boolean),
             name: i.name,
             description: i.description || i.name,
-            mrp: Math.round((i.priceInPaise || 30000) / 100 * 1.3),
-            memberPrice: Math.round((i.priceInPaise || 20000) / 100),
-            image: i.image || 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=500&auto=format&fit=crop&q=80',
+            mrp: (Number(i.mrpInPaise) > 0 ? Number(i.mrpInPaise) : 30000) / 100,
+            memberPrice:
+              (Number(i.memberPriceInPaise) > 0
+                ? Number(i.memberPriceInPaise)
+                : Number(i.mrpInPaise) > 0
+                  ? Number(i.mrpInPaise)
+                  : 30000) / 100,
+            image:
+              i.imageUrl ||
+              'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=500&auto=format&fit=crop&q=80',
             isVeg: i.isVeg ?? true,
             isBestseller: true,
             category: i.category || 'Popular',

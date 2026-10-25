@@ -100,7 +100,7 @@ function elapsedMinutes(createdAt: string, now: number) {
 }
 
 export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }) => {
-  const { user } = useUser();
+  const { user, token } = useUser();
 
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [hubId, setHubId] = useState<string>('');
@@ -179,12 +179,15 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
   // Live ticket board: the kitchen joins the hub KDS room and refreshes when
   // any ticket changes. Polling alone would show stale tickets after a reject.
   useEffect(() => {
-    if (!hubId) return;
+    if (!hubId || !token) return;
 
     const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000';
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
+      // The gateway authenticates every handshake; an anonymous socket is
+      // disconnected before it can join a hub room.
+      auth: { token },
     });
 
     socket.on('connect', () => {
@@ -205,7 +208,7 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
       socket.off('riderPickedUp', refresh);
       socket.disconnect();
     };
-  }, [hubId, fetchTickets]);
+  }, [hubId, token, fetchTickets]);
 
   const loadStock = useCallback(async () => {
     if (!hubId) return;

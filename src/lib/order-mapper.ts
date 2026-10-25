@@ -197,6 +197,7 @@ export function mapApiOrder(order: ApiOrder): Order {
           currentLng: rider.liveLng ?? 0,
         }
       : undefined,
+    deliveryOtp: order.deliveryTrip?.deliveryOtp || undefined,
   };
 }
 

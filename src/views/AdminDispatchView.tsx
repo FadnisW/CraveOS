@@ -14,12 +14,14 @@ import {
   XCircle,
 } from 'lucide-react';
 import { api } from '../lib/api-client';
+import { useUser } from '../context/UserContext';
 
 interface AdminDispatchViewProps {
   onBackToStorefront: () => void;
 }
 
 export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToStorefront }) => {
+  const { user } = useUser();
   const [riders, setRiders] = useState<any[]>([]);
   const [trips, setTrips] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -31,8 +33,17 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
     setLoading(true);
     setLoadError(null);
     try {
+      // Admins can read the whole fleet; hub managers are scoped to their hub
+      // and cannot call the admin-only rider list.
+      const ridersRequest =
+        user?.role === 'ADMIN'
+          ? api.riders.getAll()
+          : user?.scopedHubId
+            ? api.hubOps.getRiders(user.scopedHubId)
+            : Promise.resolve([]);
+
       const [ridersData, tripsData] = await Promise.all([
-        api.riders.getAll(),
+        ridersRequest,
         api.getActiveTrips(),
       ]);
       setRiders(Array.isArray(ridersData) ? ridersData : []);
@@ -48,7 +59,8 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
 
   useEffect(() => {
     fetchDispatchData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role, user?.scopedHubId]);
 
   const handleTripAction = async (
     action: string,
@@ -83,9 +95,9 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
         );
         setActionMsg(`Rider arrived at hub for Trip #${tripId.slice(0, 8)}.`);
       } else if (action === 'pickup' && riderId) {
-        const res = await api.confirmPickup(tripId, riderId);
+        await api.confirmPickup(tripId, riderId);
         setActionMsg(
-          `Pickup confirmed! Delivery OTP: ${res?.deliveryOtp || res?.otp || '****'}`,
+          `Pickup confirmed for Trip #${tripId.slice(0, 8)}. The customer's delivery OTP is now live in their app.`,
         );
       } else if (action === 'arrived-customer' && riderId) {
         await api.arrivedAtCustomer(tripId, riderId);
@@ -255,11 +267,6 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
                   {t.order?.address?.addressLine && (
                     <div className="text-[11px] text-gray-400 mt-0.5">
                       {t.order.address.addressLine}
-                    </div>
-                  )}
-                  {t.deliveryOtp && (
-                    <div className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 mt-1">
-                      Customer Delivery OTP: {t.deliveryOtp}
                     </div>
                   )}
                 </div>

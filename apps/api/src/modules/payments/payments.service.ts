@@ -190,8 +190,17 @@ export class PaymentsService {
 
   /**
    * Idempotent settlement used by both the webhook and the client verification endpoint.
+   *
+   * When Razorpay supplies the captured amount, it must match the amount we
+   * created the gateway order for. A webhook that says "captured ₹1" for a
+   * ₹764 order must never settle the order.
    */
-  async markPaymentSuccess(gatewayOrderId: string, gatewayPaymentId?: string) {
+  async markPaymentSuccess(
+    gatewayOrderId: string,
+    gatewayPaymentId?: string,
+    capturedAmountPaise?: number,
+    currency?: string,
+  ) {
     const payment = await this.prisma.payment.findFirst({
       where: { gatewayOrderId },
       include: { order: true },
@@ -200,6 +209,24 @@ export class PaymentsService {
     if (!payment) {
       this.logger.warn(`Received payment success for unknown gateway order ${gatewayOrderId}`);
       return null;
+    }
+
+    if (currency && currency.toUpperCase() !== 'INR') {
+      this.logger.error(
+        `Rejected payment ${gatewayOrderId}: currency ${currency} does not match INR`,
+      );
+      return { rejected: true, reason: 'CURRENCY_MISMATCH', orderId: payment.orderId };
+    }
+
+    if (
+      typeof capturedAmountPaise === 'number' &&
+      Number.isFinite(capturedAmountPaise) &&
+      capturedAmountPaise !== payment.amountInPaise
+    ) {
+      this.logger.error(
+        `Rejected payment ${gatewayOrderId}: captured ${capturedAmountPaise} paise but expected ${payment.amountInPaise}`,
+      );
+      return { rejected: true, reason: 'AMOUNT_MISMATCH', orderId: payment.orderId };
     }
 
     if (payment.status === 'SUCCESS') {
@@ -299,6 +326,159 @@ export class PaymentsService {
     );
 
     return { orderId: payment.orderId };
+  }
+
+  /**
+   * Refund money that was actually collected.
+   *
+   * Gateway payments go back through Razorpay; wallet payments are credited
+   * back to the wallet. The payment row tracks how much has been refunded so a
+   * second call cannot refund the same rupees again.
+   */
+  async refundOrder(
+    orderId: string,
+    amountPaise: number | undefined,
+    reason: string,
+    actorId: string,
+  ) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { orderId },
+      include: { order: { select: { id: true, userId: true, status: true } } },
+    });
+
+    if (!payment || payment.status !== 'SUCCESS') {
+      throw new BadRequestException('This order has no successful payment to refund');
+    }
+
+    const isWalletPayment = payment.gateway === 'wallet';
+
+    // Wallet refunds are recorded as wallet transactions; gateway refunds are
+    // recorded on the payment row. Keep the two ledgers separate so revenue
+    // does not subtract the same refund twice.
+    let alreadyRefundedPaise = payment.refundedAmountPaise;
+    if (isWalletPayment) {
+      const walletRefunds = await this.prisma.walletTransaction.aggregate({
+        where: {
+          orderId,
+          reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
+        },
+        _sum: { amountInPaise: true },
+      });
+      alreadyRefundedPaise = walletRefunds._sum.amountInPaise ?? 0;
+    }
+
+    const remainingPaise = payment.amountInPaise - alreadyRefundedPaise;
+    if (remainingPaise <= 0) {
+      throw new ConflictException('This payment has already been fully refunded');
+    }
+
+    const refundPaise =
+      amountPaise === undefined || amountPaise === null
+        ? remainingPaise
+        : Math.round(Number(amountPaise));
+
+    if (!Number.isInteger(refundPaise) || refundPaise <= 0) {
+      throw new BadRequestException('Refund amount must be a positive whole number of paise');
+    }
+    if (refundPaise > remainingPaise) {
+      throw new BadRequestException(
+        `Refund exceeds the remaining refundable amount of ${remainingPaise} paise`,
+      );
+    }
+
+    if (isWalletPayment) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: payment.order.userId },
+          data: { walletBalance: { increment: refundPaise } },
+        });
+        await tx.walletTransaction.create({
+          data: {
+            userId: payment.order.userId,
+            amountInPaise: refundPaise,
+            reason: 'ORDER_REFUND',
+            orderId,
+          },
+        });
+        // Do not increment refundedAmountPaise here: wallet refunds are
+        // tracked by the wallet ledger above. Revenue nets both ledgers, so
+        // writing the same refund in both places would subtract it twice.
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: { refundedAt: new Date() },
+        });
+        await tx.auditLog.create({
+          data: {
+            action: 'WALLET_REFUND',
+            actorId,
+            recordId: orderId,
+            diff: { refundPaise, reason, gateway: 'wallet' },
+          },
+        });
+      });
+
+      return {
+        orderId,
+        refundPaise,
+        gateway: 'wallet',
+        refundId: null,
+      };
+    }
+
+    if (!this.razorpay) {
+      throw new InternalServerErrorException('Payment gateway is not configured');
+    }
+    if (!payment.gatewayPaymentId) {
+      throw new BadRequestException('The gateway payment id is missing; cannot issue a refund');
+    }
+
+    let gatewayRefund: any;
+    try {
+      gatewayRefund = await this.razorpay.payments.refund(payment.gatewayPaymentId, {
+        amount: refundPaise,
+        notes: { orderId, reason },
+      });
+    } catch (error: any) {
+      this.logger.error(`Razorpay refund failed for order ${orderId}:`, error);
+      throw new InternalServerErrorException(
+        error?.error?.description || error?.message || 'Razorpay refund failed',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          refundedAmountPaise: { increment: refundPaise },
+          refundId: gatewayRefund?.id || null,
+          refundedAt: new Date(),
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: 'GATEWAY_REFUND',
+          actorId,
+          recordId: orderId,
+          diff: {
+            refundPaise,
+            reason,
+            gateway: 'razorpay',
+            refundId: gatewayRefund?.id || null,
+          },
+        },
+      });
+    });
+
+    this.logger.log(
+      `Refunded ${refundPaise} paise for order ${orderId} via Razorpay (${gatewayRefund?.id})`,
+    );
+
+    return {
+      orderId,
+      refundPaise,
+      gateway: 'razorpay',
+      refundId: gatewayRefund?.id || null,
+    };
   }
 
   async getWalletBalance(userId: string, actor: AuthenticatedActor) {

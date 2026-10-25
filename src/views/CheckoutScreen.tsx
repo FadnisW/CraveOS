@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useCart } from '../context/CartContext';
 import { useUser } from '../context/UserContext';
 import { SavedAddress, Order } from '../types';
@@ -45,6 +45,19 @@ interface ServerQuote {
 
 function paymentError(message: string, code: 'DISMISSED' | 'FAILED') {
   return Object.assign(new Error(message), { code });
+}
+
+/**
+ * One key per checkout attempt. A network retry of the same attempt reuses the
+ * key so the API replays the order it already created instead of charging the
+ * customer twice; changing the cart, address, coupon or payment method starts
+ * a new attempt with a new key.
+ */
+function newIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function loadRazorpay(): Promise<void> {
@@ -92,6 +105,23 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [quote, setQuote] = useState<ServerQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState<boolean>(false);
+
+  const idempotencyKeyRef = useRef<string>(newIdempotencyKey());
+  const attemptSignature = useMemo(
+    () =>
+      JSON.stringify({
+        addressId: activeAddress.id,
+        items: cartItems.map((ci) => [ci.item.id, ci.quantity]),
+        coupon: appliedCoupon?.code || null,
+        paymentMethod,
+        useWallet,
+      }),
+    [activeAddress.id, cartItems, appliedCoupon?.code, paymentMethod, useWallet],
+  );
+
+  useEffect(() => {
+    idempotencyKeyRef.current = newIdempotencyKey();
+  }, [attemptSignature]);
 
   // The server is the source of truth for every rupee: membership, coupon
   // validity, delivery/packaging fees and the wallet cap.
@@ -216,17 +246,20 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
           ? quote?.walletBalanceRupees ?? user.walletBalance
           : 0;
 
-      createdOrder = await api.createOrder({
-        addressId: ensuredAddress.id,
-        hubId: ensuredAddress.resolvedHubId || pinnedHubId || undefined,
-        items: cartItems.map((ci) => ({
-          menuItemId: ci.item.id,
-          quantity: ci.quantity,
-        })),
-        couponCode: appliedCoupon?.code,
-        useWalletBalance,
-        paymentMethod: effectivePaymentMethod,
-      });
+      createdOrder = await api.createOrder(
+        {
+          addressId: ensuredAddress.id,
+          hubId: ensuredAddress.resolvedHubId || pinnedHubId || undefined,
+          items: cartItems.map((ci) => ({
+            menuItemId: ci.item.id,
+            quantity: ci.quantity,
+          })),
+          couponCode: appliedCoupon?.code,
+          useWalletBalance,
+          paymentMethod: effectivePaymentMethod,
+        },
+        idempotencyKeyRef.current,
+      );
 
       if (effectivePaymentMethod === 'UPI' || effectivePaymentMethod === 'CARD') {
         if (createdOrder.finalPaidPaise > 0) {
@@ -295,6 +328,8 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       clearCart();
       setUseWallet(false);
+      // The next order must never replay this one.
+      idempotencyKeyRef.current = newIdempotencyKey();
       onOrderPlaced(mapApiOrder(settledOrder));
     } catch (err: any) {
       // A dismissed/failed modal leaves an unpaid order behind. Cancel it so it
@@ -307,6 +342,8 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
             err.code === 'DISMISSED' ? 'Customer dismissed payment' : 'Payment failed',
           )
           .catch(() => undefined);
+        // The replayed order is now cancelled, so a retry needs a fresh key.
+        idempotencyKeyRef.current = newIdempotencyKey();
       }
 
       setCheckoutError(err?.message || 'Failed to place order. Please try again.');

@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query, Patch, Body, Post, Request } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import { Public } from '../../common/decorators/public.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { Roles, AdminSubRoles } from '../../common/decorators/roles.decorator';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 @Controller('catalog')
@@ -37,6 +37,7 @@ export class CatalogController {
 
   @Patch('items/:id/86')
   @Roles('BRAND_OPS', 'HUB_STAFF', 'HUB_MANAGER', 'ADMIN')
+  @AdminSubRoles('OPERATIONS_ADMIN', 'SUPER_ADMIN')
   async toggle86Item(
     @Request() req: any,
     @Param('id') itemId: string,

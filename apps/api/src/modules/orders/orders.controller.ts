@@ -1,6 +1,15 @@
-import { Controller, Post, Get, Body, Param, Patch, Request } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  Patch,
+  Request,
+  Headers,
+} from '@nestjs/common';
 import { OrdersService, CreateOrderDto, AuthenticatedActor } from './orders.service';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { Roles, AdminSubRoles } from '../../common/decorators/roles.decorator';
 
 @Controller('orders')
 export class OrdersController {
@@ -8,8 +17,16 @@ export class OrdersController {
 
   @Post()
   @Roles('CUSTOMER', 'ADMIN')
-  async createOrder(@Request() req: any, @Body() dto: CreateOrderDto) {
-    return this.ordersService.createOrder(dto, req.user as AuthenticatedActor);
+  async createOrder(
+    @Request() req: any,
+    @Body() dto: CreateOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.ordersService.createOrder(
+      dto,
+      req.user as AuthenticatedActor,
+      idempotencyKey,
+    );
   }
 
   @Get(':id')
@@ -39,6 +56,7 @@ export class OrdersController {
 
   @Patch('brand-tickets/:ticketId/status')
   @Roles('BRAND_OPS', 'HUB_STAFF', 'HUB_MANAGER', 'ADMIN')
+  @AdminSubRoles('OPERATIONS_ADMIN', 'SUPER_ADMIN')
   async updateBrandOrderStatus(
     @Request() req: any,
     @Param('ticketId') ticketId: string,

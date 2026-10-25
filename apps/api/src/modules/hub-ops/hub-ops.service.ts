@@ -1,7 +1,17 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
+import {
+  getWalletRefundsByOrder,
+  netCollectedPaise,
+} from '../../common/utils/revenue';
 
 @Injectable()
 export class HubOpsService {
@@ -170,48 +180,125 @@ export class HubOpsService {
   /**
    * Assign staff to hub (§5.1)
    */
-  async assignStaff(hubId: string, userId: string, role: 'HUB_STAFF' | 'HUB_MANAGER') {
+  async assignStaff(
+    hubId: string,
+    userId: string,
+    role: 'HUB_STAFF' | 'HUB_MANAGER',
+    actor?: AuthenticatedActor,
+  ) {
     const hub = await this.prisma.hub.findUnique({ where: { id: hubId } });
     if (!hub) throw new NotFoundException(`Hub ${hubId} not found`);
 
-    return this.prisma.user.update({
+    if (role !== 'HUB_STAFF' && role !== 'HUB_MANAGER') {
+      throw new BadRequestException('role must be HUB_STAFF or HUB_MANAGER');
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new NotFoundException(`User ${userId} not found`);
+
+    // A hub manager must never be able to rewrite an admin/rider/brand account.
+    // Previously this endpoint accepted any user id, so a hub manager could
+    // demote the super admin to HUB_STAFF.
+    if (['ADMIN', 'RIDER', 'BRAND_OPS'].includes(target.role)) {
+      throw new ForbiddenException(
+        'Admin, rider, and brand-ops accounts cannot be reassigned as hub staff',
+      );
+    }
+    if (actor?.sub === target.id) {
+      throw new ForbiddenException('You cannot change your own role');
+    }
+
+    // Only an admin can mint another hub manager, and a hub manager cannot
+    // pull staff who already belong to a different hub.
+    if (actor?.role === 'HUB_MANAGER') {
+      if (role === 'HUB_MANAGER') {
+        throw new ForbiddenException('Only an admin can assign a hub manager');
+      }
+      if (target.scopedHubId && target.scopedHubId !== hubId) {
+        throw new ForbiddenException('This user already belongs to another hub');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
       where: { id: userId },
       data: {
         role,
         scopedHubId: hubId,
+        scopedBrandId: null,
+        adminSubRole: null,
       },
     });
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'HUB_STAFF_ASSIGNED',
+        actorId: actor?.sub || 'SYSTEM',
+        recordId: userId,
+        diff: { hubId, role },
+      },
+    });
+
+    return updated;
   }
 
   /**
    * Hub Finance (§5.1)
    */
   async getHubFinance(hubId: string) {
-    const orders = await this.prisma.order.findMany({
-      where: {
-        hubId,
-        status: { in: ['DELIVERED', 'OUT_FOR_DELIVERY', 'PICKED_UP', 'PREPARING'] },
-      },
-      select: {
-        id: true,
-        mrpTotalPaise: true,
-        memberSavingsPaise: true,
-        finalPaidPaise: true,
-        createdAt: true,
-      },
-    });
+    const [orders, refunds] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { hubId, status: { not: 'CANCELLED' } },
+        select: {
+          id: true,
+          status: true,
+          paymentMethod: true,
+          mrpTotalPaise: true,
+          memberSavingsPaise: true,
+          finalPaidPaise: true,
+          walletAppliedPaise: true,
+          createdAt: true,
+          payment: {
+            select: {
+              status: true,
+              amountInPaise: true,
+              gateway: true,
+              refundedAmountPaise: true,
+            },
+          },
+        },
+      }),
+      getWalletRefundsByOrder(this.prisma),
+    ]);
 
-    const totalRevenuePaise = orders.reduce((sum, o) => sum + o.finalPaidPaise, 0);
-    const totalOrders = orders.length;
-    const avgOrderValuePaise = totalOrders > 0 ? Math.round(totalRevenuePaise / totalOrders) : 0;
+    // Hub finance must use the same "money actually collected" definition as
+    // the platform revenue report. The old version summed finalPaidPaise for
+    // orders that were still PREPARING (never paid), and ignored wallet/refunds.
+    const byGateway = { RAZORPAY: 0, WALLET: 0, COD: 0 };
+    let totalRevenuePaise = 0;
+    let paidOrders = 0;
+
+    for (const order of orders) {
+      const { collectedPaise, gateway } = netCollectedPaise(
+        order,
+        refunds.get(order.id) ?? 0,
+      );
+      if (collectedPaise > 0) {
+        totalRevenuePaise += collectedPaise;
+        byGateway[gateway] += collectedPaise;
+        paidOrders += 1;
+      }
+    }
+
+    const avgOrderValuePaise = paidOrders > 0 ? Math.round(totalRevenuePaise / paidOrders) : 0;
 
     return {
       hubId,
-      totalOrders,
+      totalOrders: paidOrders,
       totalRevenuePaise,
       totalRevenueRupees: totalRevenuePaise / 100,
       avgOrderValuePaise,
       avgOrderValueRupees: avgOrderValuePaise / 100,
+      byGateway,
     };
   }
 
@@ -317,7 +404,8 @@ export class HubOpsService {
       tripId,
       riderId: trip.riderId,
       status: 'PICKED_UP',
-      otp, // customer needs this to confirm delivery
+      // The order room also contains the rider, so the handover code is never
+      // broadcast here. The customer reads it from their own order.
     });
 
     this.websocketsGateway.emitRiderPickedUp(trip.orderId, hubId, {
@@ -327,7 +415,7 @@ export class HubOpsService {
       orderId: trip.orderId,
     });
 
-    this.logger.log(`📦 Handoff confirmed for trip ${tripId} (hub ${hubId}) — OTP ${otp}`);
+    this.logger.log(`📦 Handoff confirmed for trip ${tripId} (hub ${hubId})`);
 
     return {
       success: true,
@@ -335,7 +423,6 @@ export class HubOpsService {
       tripId: updatedTrip.id,
       orderId: trip.orderId,
       rider: trip.rider?.name,
-      deliveryOtp: otp,
     };
   }
 
@@ -401,6 +488,9 @@ export class HubOpsService {
         order: {
           hubId,
           status: { notIn: ['CANCELLED', 'DELIVERED'] },
+          // Never send an unpaid UPI/CARD order to the kitchen. COD is
+          // collect-on-delivery, so it is valid to cook before cash arrives.
+          OR: [{ payment: { status: 'SUCCESS' } }, { paymentMethod: 'COD' }],
         },
         status: { in: ['SENT_TO_KITCHEN', 'ACCEPTED', 'PREPARING', 'READY'] },
       },

@@ -1,7 +1,14 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
 import { TicketStatus } from '@prisma/client';
+import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 interface CreateTicketDto {
   raisedByType: string; // CUSTOMER / HUB / BRAND_OPS / RIDER
@@ -37,15 +44,60 @@ export class TicketsService {
   ) {}
 
   /**
+   * A ticket may only reference an order the raiser can actually see.
+   */
+  private async assertOrderAccess(orderId: string, actor: AuthenticatedActor) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        deliveryTrip: { select: { riderId: true } },
+        brandOrders: { select: { brandId: true } },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order ${orderId} not found`);
+    }
+
+    if (actor.role === 'ADMIN') return;
+    if (actor.role === 'CUSTOMER' && order.userId === actor.sub) return;
+    if (actor.role === 'RIDER' && order.deliveryTrip?.riderId === actor.sub) return;
+    if (
+      (actor.role === 'HUB_STAFF' || actor.role === 'HUB_MANAGER') &&
+      actor.scopedHubId === order.hubId
+    ) {
+      return;
+    }
+    if (
+      actor.role === 'BRAND_OPS' &&
+      actor.scopedBrandId &&
+      order.brandOrders.some((bo) => bo.brandId === actor.scopedBrandId)
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('This order does not belong to you');
+  }
+
+  /**
    * Create a new support ticket
    */
-  async createTicket(data: CreateTicketDto) {
+  async createTicket(data: CreateTicketDto, actor: AuthenticatedActor) {
+    const category = String(data?.category || '').trim().toUpperCase();
+    if (!category) {
+      throw new BadRequestException('A ticket category is required');
+    }
+
+    if (data.orderId) {
+      await this.assertOrderAccess(data.orderId, actor);
+    }
+
     const ticket = await this.prisma.ticket.create({
       data: {
         raisedByType: data.raisedByType,
         raisedById: data.raisedById,
         orderId: data.orderId,
-        category: data.category,
+        category,
         status: 'OPEN',
         priority: data.priority || 'NORMAL',
       },
@@ -90,13 +142,18 @@ export class TicketsService {
   /**
    * Get ticket by ID
    */
-  async getTicketById(id: string) {
+  async getTicketById(id: string, actor: AuthenticatedActor) {
     const ticket = await this.prisma.ticket.findUnique({
       where: { id },
     });
 
     if (!ticket) {
       throw new NotFoundException(`Ticket ${id} not found`);
+    }
+
+    // Admins can read every ticket; everyone else can only read their own.
+    if (actor?.role !== 'ADMIN' && ticket.raisedById !== actor?.sub) {
+      throw new ForbiddenException('This ticket does not belong to you');
     }
 
     return ticket;
@@ -197,7 +254,11 @@ export class TicketsService {
   /**
    * Get all tickets for a specific user / raiser
    */
-  async getUserTickets(userId: string) {
+  async getUserTickets(userId: string, actor: AuthenticatedActor) {
+    if (actor?.role !== 'ADMIN' && userId !== actor?.sub) {
+      throw new ForbiddenException('You can only view your own tickets');
+    }
+
     return this.prisma.ticket.findMany({
       where: { raisedById: userId },
       orderBy: { createdAt: 'desc' },

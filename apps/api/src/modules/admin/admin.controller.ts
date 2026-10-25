@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Query,
+  Request,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { Roles, AdminSubRoles } from '../../common/decorators/roles.decorator';
@@ -20,6 +21,13 @@ export class AdminController {
    */
   @Get('dashboard/kpis')
   @Roles('ADMIN')
+  @AdminSubRoles(
+    'OPERATIONS_ADMIN',
+    'FINANCE_ADMIN',
+    'SUPPORT_ADMIN',
+    'MARKETING_ADMIN',
+    'SUPER_ADMIN',
+  )
   async getDashboardKPIs() {
     return this.adminService.getDashboardKPIs();
   }
@@ -39,7 +47,7 @@ export class AdminController {
    */
   @Get('users')
   @Roles('ADMIN')
-  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'SUPER_ADMIN')
+  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'FINANCE_ADMIN', 'SUPER_ADMIN')
   async getUsers(@Query('search') search?: string) {
     return this.adminService.getUsers({ search });
   }
@@ -49,6 +57,7 @@ export class AdminController {
    */
   @Get('users/:id')
   @Roles('ADMIN')
+  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'FINANCE_ADMIN', 'SUPER_ADMIN')
   async getUserById(@Param('id') id: string) {
     return this.adminService.getUserById(id);
   }
@@ -72,6 +81,7 @@ export class AdminController {
    */
   @Get('orders')
   @Roles('ADMIN')
+  @AdminSubRoles('OPERATIONS_ADMIN', 'SUPPORT_ADMIN', 'FINANCE_ADMIN', 'SUPER_ADMIN')
   async getOrders(
     @Query('status') status?: string,
     @Query('hubId') hubId?: string,
@@ -97,6 +107,12 @@ export class AdminController {
    */
   @Get('dashboard/order-distribution')
   @Roles('ADMIN')
+  @AdminSubRoles(
+    'OPERATIONS_ADMIN',
+    'FINANCE_ADMIN',
+    'MARKETING_ADMIN',
+    'SUPER_ADMIN',
+  )
   async getOrderDistribution() {
     return this.adminService.getOrderDistribution();
   }
@@ -257,8 +273,44 @@ export class AdminController {
   @Post('staff')
   @Roles('ADMIN')
   @AdminSubRoles('SUPER_ADMIN')
-  async createStaff(@Body() body: any) {
-    return this.adminService.createStaff(body);
+  async createStaff(@Request() req: any, @Body() body: any) {
+    return this.adminService.createStaff(body, req.user?.sub);
+  }
+
+  /**
+   * Finance: refund a captured payment
+   */
+  @Post('orders/:id/refund')
+  @Roles('ADMIN')
+  @AdminSubRoles('FINANCE_ADMIN', 'SUPER_ADMIN')
+  async refundOrder(
+    @Request() req: any,
+    @Param('id') orderId: string,
+    @Body('amountInPaise') amountInPaise?: number,
+    @Body('reason') reason?: string,
+  ) {
+    return this.adminService.refundOrder(orderId, amountInPaise, reason || '', req.user?.sub);
+  }
+
+  /**
+   * Marketing: promotion approval queue
+   */
+  @Get('promotions')
+  @Roles('ADMIN')
+  @AdminSubRoles('MARKETING_ADMIN', 'SUPER_ADMIN')
+  async getPromotions() {
+    return this.adminService.getPromotions();
+  }
+
+  @Patch('promotions/:id/status')
+  @Roles('ADMIN')
+  @AdminSubRoles('MARKETING_ADMIN', 'SUPER_ADMIN')
+  async setPromotionStatus(
+    @Request() req: any,
+    @Param('id') id: string,
+    @Body('status') status: 'APPROVED' | 'REJECTED',
+  ) {
+    return this.adminService.setPromotionStatus(id, status, req.user?.sub);
   }
 
   /**

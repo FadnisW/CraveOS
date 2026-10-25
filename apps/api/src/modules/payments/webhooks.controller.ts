@@ -68,10 +68,16 @@ export class WebhooksController {
       const result = await this.paymentsService.markPaymentSuccess(
         gatewayOrderId,
         paymentEntity?.id,
+        typeof paymentEntity?.amount === 'number' ? paymentEntity.amount : undefined,
+        paymentEntity?.currency,
       );
 
       if (!result) {
         return { status: 'ignored', reason: 'Unknown gateway order' };
+      }
+
+      if ((result as any).rejected) {
+        return { status: 'ignored', reason: (result as any).reason };
       }
 
       return {

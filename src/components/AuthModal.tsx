@@ -2,7 +2,16 @@
 
 import React, { useState } from 'react';
 import { api } from '../lib/api-client';
-import { X, Mail, KeyRound, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import {
+  X,
+  Mail,
+  KeyRound,
+  ArrowRight,
+  ShieldCheck,
+  CheckCircle2,
+  Bike,
+  Phone,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface AuthModalProps {
@@ -11,9 +20,14 @@ interface AuthModalProps {
   onSuccess: (user: any, token: string) => void;
 }
 
+type AuthMode = 'EMAIL' | 'RIDER';
+type Step = 'IDENTITY' | 'OTP';
+
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
-  const [step, setStep] = useState<'EMAIL' | 'OTP'>('EMAIL');
+  const [mode, setMode] = useState<AuthMode>('EMAIL');
+  const [step, setStep] = useState<Step>('IDENTITY');
   const [email, setEmail] = useState<string>('alex.morgan@eatclub.in');
+  const [phone, setPhone] = useState<string>('+919900011101');
   const [otp, setOtp] = useState<string>('');
   const [demoCode, setDemoCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -21,17 +35,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   if (!isOpen) return null;
 
+  const resetToIdentity = () => {
+    setStep('IDENTITY');
+    setOtp('');
+    setDemoCode(null);
+    setErrorMsg(null);
+  };
+
+  const switchMode = (next: AuthMode) => {
+    if (next === mode) return;
+    setMode(next);
+    resetToIdentity();
+  };
+
   const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setErrorMsg(null);
 
     try {
-      const res = await api.requestOtp(email);
-      if (res.demoOtp) {
-        setDemoCode(res.demoOtp);
-        // Auto-fill the OTP field in dev mode so user doesn't have to type it
-        setOtp(res.demoOtp);
+      if (mode === 'RIDER') {
+        const res = await api.riders.requestOtp(phone.trim());
+        if (res?.demoOtp) {
+          setDemoCode(res.demoOtp);
+          setOtp(res.demoOtp);
+        }
+      } else {
+        const res = await api.requestOtp(email);
+        if (res.demoOtp) {
+          setDemoCode(res.demoOtp);
+          // Auto-fill the OTP field in dev mode so user doesn't have to type it
+          setOtp(res.demoOtp);
+        }
       }
       setStep('OTP');
     } catch (err: any) {
@@ -47,6 +82,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     setErrorMsg(null);
 
     try {
+      if (mode === 'RIDER') {
+        const res = await api.riders.verifyOtp(
+          phone.trim(),
+          otp || demoCode || '123456',
+        );
+        if (res.accessToken) {
+          localStorage.setItem('eatclub_token', res.accessToken);
+          // Rider tokens carry the Rider table id as `sub`; the storefront
+          // user shape needs the role added explicitly.
+          onSuccess({ ...res.rider, role: 'RIDER', email: '' }, res.accessToken);
+          onClose();
+        }
+        return;
+      }
+
       const res = await api.verifyOtp(email, otp || demoCode || '123456');
       if (res.accessToken) {
         localStorage.setItem('eatclub_token', res.accessToken);
@@ -81,28 +131,86 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             </button>
           </div>
 
+          {/* Email accounts cover customers + every staff console. Riders live in
+              a separate table and sign in with their phone. */}
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-gray-100 dark:bg-slate-800">
+            <button
+              type="button"
+              onClick={() => switchMode('EMAIL')}
+              className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all ${
+                mode === 'EMAIL'
+                  ? 'bg-white dark:bg-slate-900 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-500 dark:text-slate-400'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5" />
+              Email / Staff
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('RIDER')}
+              className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all ${
+                mode === 'RIDER'
+                  ? 'bg-white dark:bg-slate-900 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-500 dark:text-slate-400'
+              }`}
+            >
+              <Bike className="w-3.5 h-3.5" />
+              Delivery Rider
+            </button>
+          </div>
+
           {errorMsg && (
             <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold">
               {errorMsg}
             </div>
           )}
 
-          {step === 'EMAIL' ? (
+          {step === 'IDENTITY' ? (
             <form onSubmit={handleRequestOtp} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-700 dark:text-slate-300">Email Address</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@example.com"
-                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-semibold focus:outline-none focus:border-rose-500"
-                  />
+              {mode === 'EMAIL' ? (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-gray-700 dark:text-slate-300">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-semibold focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Staff: use the email created by a super admin (for example
+                    finance.admin@eatclub.in).
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-gray-700 dark:text-slate-300">
+                    Rider Phone Number
+                  </label>
+                  <div className="relative">
+                    <Phone className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
+                    <input
+                      type="tel"
+                      required
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+919900011101"
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-semibold focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Use the number registered with the fleet desk. New numbers are
+                    created as pending KYC.
+                  </p>
+                </div>
+              )}
 
               <button
                 type="submit"
@@ -117,13 +225,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-gray-700 dark:text-slate-300">Enter 6-Digit OTP</label>
+                  <label className="text-xs font-bold text-gray-700 dark:text-slate-300">
+                    Enter 6-Digit OTP
+                  </label>
                   <button
                     type="button"
-                    onClick={() => setStep('EMAIL')}
+                    onClick={resetToIdentity}
                     className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline"
                   >
-                    Change Email
+                    {mode === 'RIDER' ? 'Change Number' : 'Change Email'}
                   </button>
                 </div>
                 <div className="relative">

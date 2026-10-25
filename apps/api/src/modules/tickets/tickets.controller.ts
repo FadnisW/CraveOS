@@ -11,35 +11,60 @@ import {
 import { TicketsService } from './tickets.service';
 import { Roles, AdminSubRoles } from '../../common/decorators/roles.decorator';
 import { TicketStatus } from '@prisma/client';
+import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 @Controller('tickets')
 export class TicketsController {
   constructor(private readonly ticketsService: TicketsService) {}
 
   /**
+   * Derive the raiser from the authenticated principal.
+   *
+   * The request body used to supply `raisedById` and `raisedByType`, so any
+   * caller could impersonate another customer or open tickets "as" a hub.
+   */
+  private raisedByTypeFor(role?: string): string {
+    switch (role) {
+      case 'RIDER':
+        return 'RIDER';
+      case 'HUB_STAFF':
+      case 'HUB_MANAGER':
+        return 'HUB';
+      case 'BRAND_OPS':
+        return 'BRAND_OPS';
+      case 'ADMIN':
+        return 'ADMIN';
+      default:
+        return 'CUSTOMER';
+    }
+  }
+
+  /**
    * Create a new support ticket
    * Any authenticated user can create a ticket
    */
   @Post()
-  @Roles('CUSTOMER', 'RIDER', 'HUB_STAFF', 'BRAND_OPS', 'ADMIN')
+  @Roles('CUSTOMER', 'RIDER', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS', 'ADMIN')
   async createTicket(
+    @Request() req: any,
     @Body()
     body: {
-      raisedByType?: string;
-      raisedById?: string;
-      userId?: string;
       orderId?: string;
       category: string;
       priority?: string;
     },
   ) {
-    return this.ticketsService.createTicket({
-      raisedByType: body.raisedByType || 'CUSTOMER',
-      raisedById: body.raisedById || body.userId || 'UNKNOWN',
-      orderId: body.orderId,
-      category: body.category || 'OTHER',
-      priority: body.priority || 'NORMAL',
-    });
+    const actor = req.user as AuthenticatedActor;
+    return this.ticketsService.createTicket(
+      {
+        raisedByType: this.raisedByTypeFor(actor?.role),
+        raisedById: actor.sub,
+        orderId: body.orderId,
+        category: body.category || 'OTHER',
+        priority: body.priority || 'NORMAL',
+      },
+      actor,
+    );
   }
 
   /**
@@ -61,6 +86,7 @@ export class TicketsController {
    */
   @Get('stats')
   @Roles('ADMIN')
+  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'SUPER_ADMIN')
   async getTicketStats() {
     return this.ticketsService.getTicketStats();
   }
@@ -69,22 +95,26 @@ export class TicketsController {
    * Get tickets for a specific user
    */
   @Get('user/:userId')
-  @Roles('CUSTOMER', 'RIDER', 'ADMIN')
-  async getUserTickets(@Param('userId') userId: string) {
-    // TODO: Add ownership check - users should only see their own tickets
-    // unless they are admin
-    return this.ticketsService.getUserTickets(userId);
+  @Roles('CUSTOMER', 'RIDER', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS', 'ADMIN')
+  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'SUPER_ADMIN')
+  async getUserTickets(@Request() req: any, @Param('userId') userId: string) {
+    return this.ticketsService.getUserTickets(
+      userId,
+      req.user as AuthenticatedActor,
+    );
   }
 
   /**
    * Get ticket by ID
    */
   @Get(':id')
-  @Roles('CUSTOMER', 'RIDER', 'ADMIN')
-  async getTicketById(@Param('id') id: string) {
-    // TODO: Add ownership check - users should only see their own tickets
-    // unless they are admin
-    return this.ticketsService.getTicketById(id);
+  @Roles('CUSTOMER', 'RIDER', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS', 'ADMIN')
+  @AdminSubRoles('SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'SUPER_ADMIN')
+  async getTicketById(@Request() req: any, @Param('id') id: string) {
+    return this.ticketsService.getTicketById(
+      id,
+      req.user as AuthenticatedActor,
+    );
   }
 
   /**

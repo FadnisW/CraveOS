@@ -1,8 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../lib/api-client';
+import { useUser } from '../../context/UserContext';
+import { hasAdminSubRole } from '../../lib/roles';
 import { Search, User, Wallet, Shield, AlertCircle, PlusCircle, CheckCircle } from 'lucide-react';
 
 export const AdminUserManagementView: React.FC = () => {
+  const { user } = useUser();
+  // Operations and marketing admins can read the directory but only support
+  // and finance may move money on a customer's wallet.
+  const canAdjustWallet = hasAdminSubRole(user, 'SUPPORT_ADMIN', 'FINANCE_ADMIN');
+
   const [users, setUsers] = useState<any[]>([]);
   const [search, setSearch] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
@@ -42,6 +49,7 @@ export const AdminUserManagementView: React.FC = () => {
     if (!selectedUser || !walletAmount || !walletReason) return;
 
     setAdjusting(true);
+    setError(null);
     try {
       const amountPaise = Math.round(parseFloat(walletAmount) * 100);
       await api.admin.adjustWallet(selectedUser.id, amountPaise, walletReason);
@@ -52,7 +60,7 @@ export const AdminUserManagementView: React.FC = () => {
       fetchUsers();
       setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {
-      alert(err.message || 'Failed to adjust wallet');
+      setError(err.message || 'Failed to adjust wallet');
     } finally {
       setAdjusting(false);
     }
@@ -169,12 +177,14 @@ export const AdminUserManagementView: React.FC = () => {
                     </td>
 
                     <td className="p-4 text-right">
-                      <button
-                        onClick={() => setSelectedUser(u)}
-                        className="bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-emerald-200 dark:border-emerald-800"
-                      >
-                        Adjust Wallet
-                      </button>
+                      {canAdjustWallet && (
+                        <button
+                          onClick={() => setSelectedUser(u)}
+                          className="bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-emerald-200 dark:border-emerald-800"
+                        >
+                          Adjust Wallet
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

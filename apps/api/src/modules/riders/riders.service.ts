@@ -173,6 +173,16 @@ export class RidersService {
   /**
    * Get rider detail including recent trips and earnings ledger
    */
+  /**
+   * Hubs a rider may stage from (self-service).
+   */
+  async listHubs() {
+    return this.prisma.hub.findMany({
+      select: { id: true, name: true, city: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async getRiderById(id: string) {
     const rider = await this.prisma.rider.findUnique({
       where: { id },
@@ -209,7 +219,24 @@ export class RidersService {
   /**
    * Approve / Reject / Suspend rider KYC (Admin only)
    */
-  async updateRiderStatus(id: string, status: RiderStatus, reason?: string) {
+  async updateRiderStatus(
+    id: string,
+    status: RiderStatus,
+    reason?: string,
+    actorId?: string,
+  ) {
+    const validStatuses: RiderStatus[] = [
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'SUSPENDED',
+      'REJECTED',
+    ];
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestException(
+        `status must be one of ${validStatuses.join(', ')}`,
+      );
+    }
+
     const existing = await this.prisma.rider.findUnique({ where: { id } });
     if (!existing) {
       throw new NotFoundException(`Rider with ID '${id}' not found`);
@@ -228,7 +255,7 @@ export class RidersService {
     await this.prisma.auditLog.create({
       data: {
         action: `RIDER_STATUS_${status}`,
-        actorId: 'ADMIN',
+        actorId: actorId || 'SYSTEM',
         recordId: id,
         diff: {
           previousStatus: existing.status,

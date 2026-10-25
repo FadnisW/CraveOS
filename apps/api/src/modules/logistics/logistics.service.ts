@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 @Injectable()
 export class LogisticsService {
@@ -18,7 +19,21 @@ export class LogisticsService {
     private readonly websocketsGateway: OrderTrackingGateway,
   ) {}
 
-  async autoAssignRider(orderId: string) {
+  /**
+   * A hub manager may only dispatch trips that belong to their own hub.
+   * Admins have platform-wide access.
+   */
+  private assertHubScope(actor: AuthenticatedActor | undefined, hubId: string) {
+    if (
+      actor?.role === 'HUB_MANAGER' &&
+      actor.scopedHubId &&
+      actor.scopedHubId !== hubId
+    ) {
+      throw new ForbiddenException('This trip belongs to a different hub');
+    }
+  }
+
+  async autoAssignRider(orderId: string, actor?: AuthenticatedActor) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -28,6 +43,8 @@ export class LogisticsService {
       },
     });
     if (!order) return null;
+
+    this.assertHubScope(actor, order.hubId);
 
     // Gate Constraint: Ensure ALL non-rejected BrandOrders are ACCEPTED, PREPARING, or READY
     const validBrandOrders = order.brandOrders.filter((bo) => bo.status !== 'REJECTED');
@@ -51,7 +68,7 @@ export class LogisticsService {
 
     // An existing trip that already has a live rider is returned as-is.
     if (order.deliveryTrip && order.deliveryTrip.riderId && order.deliveryTrip.status !== 'UNASSIGNED') {
-      return { trip: order.deliveryTrip };
+      return { trip: this.withoutDeliveryOtp(order.deliveryTrip) };
     }
 
     // An existing UNASSIGNED trip (e.g. after a rider rejection) is re-dispatched
@@ -67,9 +84,9 @@ export class LogisticsService {
         data: { riderId: rider.id, status: 'ASSIGNED' },
       });
 
-      this.websocketsGateway.emitTripOffered(rider.id, trip);
+      this.websocketsGateway.emitTripOffered(rider.id, this.withoutDeliveryOtp(trip));
       this.logger.log(`🛵 Re-dispatched trip ${trip.id} for Order ${orderId} → Rider ${rider.id}`);
-      return { trip };
+      return { trip: this.withoutDeliveryOtp(trip) };
     }
 
     const trip = await this.prisma.deliveryTrip.create({
@@ -89,11 +106,11 @@ export class LogisticsService {
     );
 
     if (rider) {
-      this.websocketsGateway.emitTripOffered(rider.id, trip);
+      this.websocketsGateway.emitTripOffered(rider.id, this.withoutDeliveryOtp(trip));
     }
 
     return {
-      trip,
+      trip: this.withoutDeliveryOtp(trip),
     };
   }
 
@@ -133,12 +150,15 @@ export class LogisticsService {
     );
   }
 
-  async getActiveTrips() {
-    return this.prisma.deliveryTrip.findMany({
+  async getActiveTrips(actor?: AuthenticatedActor) {
+    const trips = await this.prisma.deliveryTrip.findMany({
       where: {
         status: {
           in: ['UNASSIGNED', 'ASSIGNED', 'ACCEPTED', 'ARRIVED_AT_HUB', 'PICKED_UP', 'ARRIVING'],
         },
+        ...(actor?.role === 'HUB_MANAGER' && actor.scopedHubId
+          ? { order: { hubId: actor.scopedHubId } }
+          : {}),
       },
       include: {
         rider: {
@@ -165,6 +185,12 @@ export class LogisticsService {
       },
       orderBy: { createdAt: 'asc' },
     });
+
+    // Hub managers run dispatch but never hand the food to the customer, so
+    // they have no business seeing the handover code.
+    return actor?.role === 'HUB_MANAGER'
+      ? trips.map((trip) => this.withoutDeliveryOtp(trip))
+      : trips;
   }
 
   /**
@@ -241,7 +267,7 @@ export class LogisticsService {
    * Rider accepts the assigned trip
    * ASSIGNED → ACCEPTED
    */
-  async acceptTrip(tripId: string, riderId: string) {
+  async acceptTrip(tripId: string, riderId: string, actor?: AuthenticatedActor) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: true },
@@ -250,6 +276,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -288,7 +316,13 @@ export class LogisticsService {
    * Rider arrives at hub (with geofence validation)
    * ACCEPTED → ARRIVED_AT_HUB
    */
-  async arrivedAtHub(tripId: string, riderId: string, lat: number, lng: number) {
+  async arrivedAtHub(
+    tripId: string,
+    riderId: string,
+    lat: number,
+    lng: number,
+    actor?: AuthenticatedActor,
+  ) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: { include: { hub: true } } },
@@ -297,6 +331,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -340,7 +376,7 @@ export class LogisticsService {
    * Rider confirms pickup from hub (generates OTP for delivery)
    * ARRIVED_AT_HUB → PICKED_UP
    */
-  async confirmPickup(tripId: string, riderId: string) {
+  async confirmPickup(tripId: string, riderId: string, actor?: AuthenticatedActor) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: true },
@@ -349,6 +385,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -400,7 +438,9 @@ export class LogisticsService {
       tripId,
       riderId,
       status: 'PICKED_UP',
-      otp, // Send OTP to customer
+      // Deliberately no OTP: the order room also contains the rider and hub
+      // staff. The customer app re-reads /orders/:id, which returns the code to
+      // the buyer only.
     });
 
     // Emit riderPickedUp to customer & hub KDS room per Chunk 12
@@ -411,16 +451,16 @@ export class LogisticsService {
       orderId: trip.orderId,
     });
 
-    this.logger.log(`📦 Rider ${riderId} picked up order for trip ${tripId}, OTP: ${otp}`);
+    this.logger.log(`📦 Rider ${riderId} picked up order for trip ${tripId}`);
 
-    return { trip: updatedTrip, otp };
+    return { trip: this.withoutDeliveryOtp(updatedTrip) };
   }
 
   /**
    * Rider arrives at customer location (with geofence validation)
    * PICKED_UP → ARRIVING
    */
-  async arrivedAtCustomer(tripId: string, riderId: string) {
+  async arrivedAtCustomer(tripId: string, riderId: string, actor?: AuthenticatedActor) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: { include: { address: true } } },
@@ -429,6 +469,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -459,7 +501,13 @@ export class LogisticsService {
    * Verify delivery OTP and complete delivery (creates rider earnings)
    * ARRIVING → DELIVERED
    */
-  async verifyDeliveryOtp(tripId: string, riderId: string, otp: string, proofPhotoUrl?: string) {
+  async verifyDeliveryOtp(
+    tripId: string,
+    riderId: string,
+    otp: string,
+    proofPhotoUrl?: string,
+    actor?: AuthenticatedActor,
+  ) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: { include: { address: true, hub: true } } },
@@ -468,6 +516,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -558,7 +608,12 @@ export class LogisticsService {
    * Rider rejects the assigned trip
    * ASSIGNED → UNASSIGNED (makes trip available for reassignment)
    */
-  async rejectTrip(tripId: string, riderId: string, reason: string) {
+  async rejectTrip(
+    tripId: string,
+    riderId: string,
+    reason: string,
+    actor?: AuthenticatedActor,
+  ) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: true },
@@ -567,6 +622,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (trip.riderId !== riderId) {
       throw new ForbiddenException(`Trip ${tripId} is not assigned to rider ${riderId}`);
@@ -618,7 +675,7 @@ export class LogisticsService {
    * Cancel trip (admin action or system timeout)
    * Any active status → CANCELLED
    */
-  async cancelTrip(tripId: string, reason: string) {
+  async cancelTrip(tripId: string, reason: string, actor?: AuthenticatedActor) {
     const trip = await this.prisma.deliveryTrip.findUnique({
       where: { id: tripId },
       include: { order: true },
@@ -627,6 +684,8 @@ export class LogisticsService {
     if (!trip) {
       throw new NotFoundException(`Trip ${tripId} not found`);
     }
+
+    this.assertHubScope(actor, trip.order.hubId);
 
     if (['DELIVERED', 'CANCELLED'].includes(trip.status)) {
       throw new ConflictException(`Trip ${tripId} is already in terminal status ${trip.status}`);
@@ -666,7 +725,7 @@ export class LogisticsService {
    * Get rider's active trip
    */
   async getRiderActiveTrip(riderId: string) {
-    return this.prisma.deliveryTrip.findFirst({
+    const trip = await this.prisma.deliveryTrip.findFirst({
       where: {
         riderId,
         status: { in: ['ASSIGNED', 'ACCEPTED', 'ARRIVED_AT_HUB', 'PICKED_UP', 'ARRIVING'] },
@@ -676,6 +735,7 @@ export class LogisticsService {
           include: {
             address: true,
             hub: true,
+            user: { select: { name: true, phone: true } },
             brandOrders: {
               include: { items: true },
             },
@@ -683,13 +743,17 @@ export class LogisticsService {
         },
       },
     });
+
+    // The rider must collect the code from the customer at the door. Shipping
+    // it in the trip payload would let them self-complete the delivery.
+    return trip ? this.withoutDeliveryOtp(trip) : null;
   }
 
   /**
    * Get rider's trip history
    */
   async getRiderTripHistory(riderId: string) {
-    return this.prisma.deliveryTrip.findMany({
+    const trips = await this.prisma.deliveryTrip.findMany({
       where: { riderId },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -702,5 +766,13 @@ export class LogisticsService {
         },
       },
     });
+
+    return trips.map((trip) => this.withoutDeliveryOtp(trip));
+  }
+
+  /** Remove the customer handover code from a trip before it leaves the API. */
+  private withoutDeliveryOtp<T extends { deliveryOtp?: string | null }>(trip: T): Omit<T, 'deliveryOtp'> {
+    const { deliveryOtp, ...safe } = trip;
+    return safe;
   }
 }

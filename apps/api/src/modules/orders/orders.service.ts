@@ -66,10 +66,37 @@ export class OrdersService {
   // Order creation
   // ---------------------------------------------------------------------------
 
-  async createOrder(dto: CreateOrderDto, actor: AuthenticatedActor) {
+  async createOrder(
+    dto: CreateOrderDto,
+    actor: AuthenticatedActor,
+    idempotencyKey?: string,
+  ) {
     const userId = actor?.sub;
     if (!userId) {
       throw new ForbiddenException('Authentication required');
+    }
+
+    // A retried checkout (double tap, flaky network) must return the original
+    // order instead of charging the wallet and creating a second kitchen
+    // ticket. The key is scoped to the user so one customer cannot probe
+    // another customer's order ids.
+    const retryKey = String(idempotencyKey || '').trim().slice(0, 128) || null;
+    if (retryKey) {
+      const existing = await this.prisma.order.findUnique({
+        where: { idempotencyKey: retryKey },
+        include: {
+          brandOrders: { include: { items: true } },
+          address: true,
+          hub: true,
+          payment: true,
+        },
+      });
+      if (existing) {
+        if (existing.userId !== userId) {
+          throw new ForbiddenException('This idempotency key belongs to another account');
+        }
+        return existing;
+      }
     }
 
     if (!dto?.items?.length) {
@@ -211,7 +238,9 @@ export class OrdersService {
       } (wallet ₹${priceBreakdown.walletApplied})`,
     );
 
-    const createdOrder = await this.prisma.$transaction(async (tx) => {
+    let createdOrder: any;
+    try {
+      createdOrder = await this.prisma.$transaction(async (tx) => {
       // Re-validate availability inside the transaction — an item can be 86'd
       // between the pricing read above and the write below.
       const freshItems = await tx.menuItem.findMany({
@@ -230,6 +259,7 @@ export class OrdersService {
           userId,
           hubId,
           addressId: dto.addressId,
+          idempotencyKey: retryKey,
           mrpTotalPaise,
           memberSavingsPaise,
           deliveryFeePaise,
@@ -326,7 +356,25 @@ export class OrdersService {
           payment: true,
         },
       });
-    });
+      });
+    } catch (error: any) {
+      // Two concurrent retries can both miss the pre-check; the unique index
+      // makes one transaction lose with P2002. Return the winner instead of
+      // surfacing a 500 to the customer.
+      if (error?.code === 'P2002' && retryKey) {
+        const winner = await this.prisma.order.findUnique({
+          where: { idempotencyKey: retryKey },
+          include: {
+            brandOrders: { include: { items: true } },
+            address: true,
+            hub: true,
+            payment: true,
+          },
+        });
+        if (winner && winner.userId === userId) return winner;
+      }
+      throw error;
+    }
 
     // Post-transaction: referral bonus on the user's first-ever order.
     if (createdOrder) {
@@ -590,7 +638,30 @@ export class OrdersService {
     }
 
     this.assertCanViewOrder(order, actor);
-    return order;
+    return this.redactDeliveryOtp(order, actor);
+  }
+
+  /**
+   * The delivery OTP is the customer's proof that the food reached their door.
+   *
+   * Riders, hub staff, and brand operators can all read an order they are
+   * involved in, but none of them may receive the OTP: a rider holding the code
+   * could close a delivery without ever meeting the customer. Only the buyer
+   * (and a platform admin handling a dispute) sees it.
+   */
+  private redactDeliveryOtp<
+    T extends { userId: string; deliveryTrip?: { deliveryOtp?: string | null } | null },
+  >(order: T, actor: AuthenticatedActor): T {
+    if (!order?.deliveryTrip) return order;
+
+    const role = actor?.role || 'CUSTOMER';
+    const isBuyer = order.userId === actor?.sub;
+    if (role === 'ADMIN' || isBuyer) return order;
+
+    return {
+      ...order,
+      deliveryTrip: { ...order.deliveryTrip, deliveryOtp: null },
+    };
   }
 
   async getUserOrders(userId: string, actor: AuthenticatedActor) {

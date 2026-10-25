@@ -95,7 +95,15 @@ export class CatalogService {
     });
   }
 
-  async toggle86Item(itemId: string, isAvailable: boolean, actor?: { role?: string; scopedBrandId?: string | null }) {
+  async toggle86Item(
+    itemId: string,
+    isAvailable: boolean,
+    actor?: {
+      role?: string;
+      scopedBrandId?: string | null;
+      scopedHubId?: string | null;
+    },
+  ) {
     const item = await this.prisma.menuItem.findUnique({
       where: { id: itemId },
       include: { brandKitchen: { select: { brandId: true, hubId: true } } },
@@ -113,6 +121,15 @@ export class CatalogService {
       actor.scopedBrandId !== item.brandKitchen.brandId
     ) {
       throw new ForbiddenException('You can only manage menu items for your own brand');
+    }
+
+    // A hub operator may only 86 items in their own kitchen. Without this a
+    // staff account at one hub could take another hub's menu offline.
+    if (
+      (actor?.role === 'HUB_STAFF' || actor?.role === 'HUB_MANAGER') &&
+      actor.scopedHubId !== item.brandKitchen.hubId
+    ) {
+      throw new ForbiddenException('You can only manage menu items for your own hub');
     }
 
     return this.prisma.menuItem.update({

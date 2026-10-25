@@ -226,6 +226,7 @@ model Order {
   userId             String
   addressId          String
   hubId              String
+  idempotencyKey     String?        @unique // client retry key; prevents duplicate orders/charges
   status             OrderStatus    @default(PENDING_CONFIRMATION)
   paymentMethod      String         @default("UPI") // UPI / CARD / WALLET / COD
   mrpTotalPaise      Int
@@ -285,6 +286,9 @@ model Payment {
   gatewayPaymentId String?
   status         PaymentStatus @default(INITIATED)
   amountInPaise  Int
+  refundedAmountPaise Int       @default(0) // gateway refunds actually issued
+  refundId       String?
+  refundedAt     DateTime?
   order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([gatewayOrderId])

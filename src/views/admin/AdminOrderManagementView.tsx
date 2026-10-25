@@ -1,8 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../lib/api-client';
+import { useUser } from '../../context/UserContext';
+import { hasAdminSubRole } from '../../lib/roles';
 import { ShoppingBag, RefreshCw, AlertCircle, Bike, CheckCircle } from 'lucide-react';
 
 export const AdminOrderManagementView: React.FC = () => {
+  const { user } = useUser();
+  // Rider reassignment is an operations action. Finance/support/marketing
+  // admins can read orders but must not move a live delivery between riders.
+  const canReassign = hasAdminSubRole(user, 'OPERATIONS_ADMIN');
+
   const [orders, setOrders] = useState<any[]>([]);
   const [riders, setRiders] = useState<any[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -21,10 +28,10 @@ export const AdminOrderManagementView: React.FC = () => {
     try {
       const [ordersData, ridersData] = await Promise.all([
         api.admin.getOrders({ status: statusFilter || undefined }),
-        api.riders.getAll().catch(() => []),
+        canReassign ? api.riders.getAll().catch(() => []) : Promise.resolve([]),
       ]);
-      setOrders(ordersData);
-      setRiders(ridersData);
+      setOrders(Array.isArray(ordersData) ? ordersData : []);
+      setRiders(Array.isArray(ridersData) ? ridersData : []);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch platform orders');
     } finally {
@@ -34,13 +41,15 @@ export const AdminOrderManagementView: React.FC = () => {
 
   useEffect(() => {
     fetchOrdersData();
-  }, [statusFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, canReassign]);
 
   const handleReassignSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reassignOrder || !selectedRiderId) return;
 
     setReassigning(true);
+    setError(null);
     try {
       await api.admin.manuallyReassignRider(reassignOrder.id, selectedRiderId);
       setSuccessMsg(`Successfully reassigned Rider to Order #${reassignOrder.id.substring(0, 8)}`);
@@ -49,7 +58,7 @@ export const AdminOrderManagementView: React.FC = () => {
       fetchOrdersData();
       setTimeout(() => setSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(err.message || 'Failed to reassign rider');
+      setError(err.message || 'Failed to reassign rider');
     } finally {
       setReassigning(false);
     }
@@ -169,16 +178,19 @@ export const AdminOrderManagementView: React.FC = () => {
                     )}
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setReassignOrder(o);
-                      setSelectedRiderId(o.deliveryTrip?.riderId || '');
-                    }}
-                    className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
-                  >
-                    <Bike className="w-3.5 h-3.5 text-emerald-400" />
-                    Reassign Rider
-                  </button>
+                  {canReassign && (
+                    <button
+                      onClick={() => {
+                        setReassignOrder(o);
+                        setSelectedRiderId(o.deliveryTrip?.riderId || '');
+                      }}
+                      className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+                      title="Move this delivery to another rider"
+                    >
+                      <Bike className="w-3.5 h-3.5 text-emerald-400" />
+                      Reassign Rider
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

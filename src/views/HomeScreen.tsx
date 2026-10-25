@@ -78,7 +78,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               rating: fallback.rating || 4.5,
               totalRatings: fallback.totalRatings || 2500,
               deliveryTimeMins: fallback.deliveryTimeMins || 20,
-              minOrderValue: b.minOrderValue || fallback.minOrderValue || 149,
+              minOrderValue: Number(b.minOrderValue) > 0
+                ? Math.round(Number(b.minOrderValue) / 100)
+                : fallback.minOrderValue || 149,
               categories: b.cuisine || fallback.categories,
               isAvailable: b.isActive ?? true,
               isOwned: b.isOwned ?? fallback.isOwned ?? true,
@@ -91,18 +93,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         if (apiItems && Array.isArray(apiItems) && apiItems.length > 0) {
           const mappedItems: MenuItem[] = apiItems.map((i: any) => ({
             id: i.id,
-            brandId: i.brandId,
+            brandId: i.brandKitchen?.brand?.slug || i.brandKitchen?.brand?.id || 'box8',
             name: i.name,
             description: i.description || 'Prepared fresh at our cloud kitchen hub',
-            mrp: i.mrp || Math.round(i.price * 1.3),
-            memberPrice: i.price,
+            mrp: (Number(i.mrpInPaise) > 0 ? Number(i.mrpInPaise) : 30000) / 100,
+            memberPrice:
+              (Number(i.memberPriceInPaise) > 0
+                ? Number(i.memberPriceInPaise)
+                : Number(i.mrpInPaise) > 0
+                  ? Number(i.mrpInPaise)
+                  : 30000) / 100,
             image: i.imageUrl || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=500&auto=format&fit=crop&q=80',
             isVeg: i.isVeg ?? true,
             isBestseller: i.isBestseller ?? false,
             category: i.category || 'Popular',
             rating: 4.8,
             isAvailable: i.isAvailable ?? true,
-            availableHubIds: i.availableHubIds || ['hub-hsr-01'],
+            availableHubIds:
+              (i.brandKitchen?.brand?.brandKitchens ?? [])
+                .map((bk: { hubId: string }) => bk.hubId)
+                .filter(Boolean) || ['hub-hsr-01'],
           }));
           setMenuItems(mappedItems);
         }

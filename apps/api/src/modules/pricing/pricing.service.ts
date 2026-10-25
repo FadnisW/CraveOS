@@ -180,12 +180,19 @@ export class PricingService {
     }
 
     const now = new Date();
-    const dbRules = await this.prisma.pricingRule.findMany({
+    const rawRules = await this.prisma.pricingRule.findMany({
       where: {
         startsAt: { lte: now },
         endsAt: { gt: now },
       },
     }).catch(() => [] as any[]);
+
+    // Brand-proposed promotions start life as PENDING_ADMIN_APPROVAL. Only
+    // approved (or legacy rules with no status) may be advertised or applied.
+    const dbRules = rawRules.filter((rule: any) => {
+      const status = rule?.config?.status;
+      return !status || status === 'APPROVED';
+    });
 
     const happyHourRule = dbRules.find((r: any) => r.type === 'HAPPY_HOUR');
     const mealOfDayRule = dbRules.find((r: any) => r.type === 'MEAL_OF_DAY');

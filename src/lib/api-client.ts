@@ -15,18 +15,6 @@ export async function apiRequest<T = any>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  // SDD §5.2: Attach a deterministic Idempotency-Key for POST /orders
-  // to prevent duplicate charges if the network drops and the client retries.
-  // Key is stable within a 5-minute window bucket, so a retry in the same window
-  // hits the same server-side idempotency cache rather than creating a second order.
-  if (typeof window !== 'undefined' && endpoint === '/orders' && options.method === 'POST') {
-    const body = typeof options.body === 'string' ? options.body : '';
-    const windowBucket = Math.floor(Date.now() / 300000); // 5-minute window
-    const rawKey = `${body}::${windowBucket}`;
-    const idempotencyKey = btoa(encodeURIComponent(rawKey)).substring(0, 64);
-    headers['Idempotency-Key'] = idempotencyKey;
-  }
-
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
@@ -103,11 +91,25 @@ export const api = {
   getActiveOffers: () => apiRequest('/pricing/offers/active'),
 
   // Orders
-  createOrder: (orderData: any) =>
-    apiRequest('/orders', {
+  /**
+   * `idempotencyKey` must be stable across retries of the *same* checkout
+   * attempt. Checkout generates one per mount so a double tap or a dropped
+   * response replays the original order instead of charging twice, while a
+   * genuinely separate order (same cart, minutes later) gets a new key.
+   */
+  createOrder: (orderData: any, idempotencyKey?: string) => {
+    const key =
+      idempotencyKey ||
+      (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+    return apiRequest('/orders', {
       method: 'POST',
+      headers: { 'Idempotency-Key': key },
       body: JSON.stringify(orderData),
-    }),
+    });
+  },
 
   getOrderById: (orderId: string) => apiRequest(`/orders/${orderId}`),
   getUserOrders: (userId: string) => apiRequest(`/orders/user/${userId}`),
@@ -259,10 +261,10 @@ export const api = {
         body: JSON.stringify({ status }),
       }),
 
-    resolve: (id: string, note: string) =>
+    resolve: (id: string, resolutionNote: string) =>
       apiRequest(`/tickets/${id}/resolve`, {
         method: 'PATCH',
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ resolutionNote }),
       }),
 
     getUserTickets: (userId: string) => apiRequest(`/tickets/user/${userId}`),
@@ -357,11 +359,36 @@ export const api = {
       if (limit) params.append('limit', limit.toString());
       return apiRequest(`/admin/audit-log?${params.toString()}`);
     },
+    /** Finance: refund a captured gateway/wallet payment. */
+    refundOrder: (orderId: string, amountInPaise?: number, reason?: string) =>
+      apiRequest(`/admin/orders/${orderId}/refund`, {
+        method: 'POST',
+        body: JSON.stringify({ amountInPaise, reason }),
+      }),
+    /** Marketing: promotion approval queue. */
+    getPromotions: () => apiRequest('/admin/promotions'),
+    setPromotionStatus: (id: string, status: 'APPROVED' | 'REJECTED') =>
+      apiRequest(`/admin/promotions/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }),
   },
 
   // Riders Admin / Self
   riders: {
+    /** Public: rider phone OTP sign-in (riders have no email column). */
+    requestOtp: (phone: string) =>
+      apiRequest('/riders/register', {
+        method: 'POST',
+        body: JSON.stringify({ phone }),
+      }),
+    verifyOtp: (phone: string, code: string, name?: string, vehicleType?: string) =>
+      apiRequest('/riders/verify-otp', {
+        method: 'POST',
+        body: JSON.stringify({ phone, code, name, vehicleType }),
+      }),
     getApprovalQueue: () => apiRequest('/riders/approval-queue'),
+    getHubs: () => apiRequest('/riders/hubs'),
     getAll: (filters?: any) => {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);
@@ -379,6 +406,36 @@ export const api = {
       apiRequest(`/riders/${id}/online`, {
         method: 'PATCH',
         body: JSON.stringify({ isOnline }),
+      }),
+    getEarnings: (id: string) => apiRequest(`/riders/${id}/earnings`),
+    updateDocuments: (
+      id: string,
+      docs: {
+        vehicleType?: string;
+        vehicleRegNo?: string;
+        licenceDocUrl?: string;
+        vehicleRcDocUrl?: string;
+      },
+    ) =>
+      apiRequest(`/riders/${id}/documents`, {
+        method: 'PATCH',
+        body: JSON.stringify(docs),
+      }),
+    updateBank: (id: string, bank: { bankAccountRef?: string; upiId?: string }) =>
+      apiRequest(`/riders/${id}/bank`, {
+        method: 'PATCH',
+        body: JSON.stringify(bank),
+      }),
+    setHub: (id: string, hubId: string) =>
+      apiRequest(`/riders/${id}/hub`, {
+        method: 'PATCH',
+        body: JSON.stringify({ hubId }),
+      }),
+    /** Self: GPS ping while on an active trip. */
+    pingLocation: (id: string, lat: number, lng: number) =>
+      apiRequest(`/logistics/rider/${id}/location`, {
+        method: 'POST',
+        body: JSON.stringify({ lat, lng }),
       }),
   },
 

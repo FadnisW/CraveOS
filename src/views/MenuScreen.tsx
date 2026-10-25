@@ -99,7 +99,11 @@ export const MenuScreen: React.FC<MenuScreenProps> = ({
               rating: fallback.rating || 4.5,
               totalRatings: fallback.totalRatings || 2500,
               deliveryTimeMins: fallback.deliveryTimeMins || 20,
-              minOrderValue: b.minOrderValue || 149,
+              // The API stores the minimum order in paise; the storefront type
+              // and every price label are in rupees.
+              minOrderValue: Number(b.minOrderValue) > 0
+                ? Math.round(Number(b.minOrderValue) / 100)
+                : fallback.minOrderValue || 149,
               categories: b.cuisine || ['Popular'],
               isAvailable: b.isActive ?? true,
               isOwned: b.isOwned ?? fallback.isOwned ?? true,
@@ -116,9 +120,16 @@ export const MenuScreen: React.FC<MenuScreenProps> = ({
             availableHubIds: (i.brandKitchen?.brand?.brandKitchens ?? []).map((bk: { hubId: string }) => bk.hubId).filter(Boolean),
             name: i.name,
             description: i.description || i.name,
-            mrp: Math.round((i.priceInPaise || 30000) / 100 * 1.3),
-            memberPrice: Math.round((i.priceInPaise || 20000) / 100),
-            image: i.image || 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=500&auto=format&fit=crop&q=80',
+            mrp: (Number(i.mrpInPaise) > 0 ? Number(i.mrpInPaise) : 30000) / 100,
+            memberPrice:
+              (Number(i.memberPriceInPaise) > 0
+                ? Number(i.memberPriceInPaise)
+                : Number(i.mrpInPaise) > 0
+                  ? Number(i.mrpInPaise)
+                  : 30000) / 100,
+            image:
+              i.imageUrl ||
+              'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=500&auto=format&fit=crop&q=80',
             isVeg: i.isVeg ?? true,
             isBestseller: true,
             category: i.category || 'Popular',

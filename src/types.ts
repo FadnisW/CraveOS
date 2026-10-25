@@ -175,6 +175,8 @@ export interface Order {
     currentLat: number;
     currentLng: number;
   };
+  /** Customer-only handover code, present once the rider has picked up. */
+  deliveryOtp?: string | null;
 }
 
 export interface Rider {

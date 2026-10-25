@@ -19,6 +19,7 @@ import {
   XCircle,
   PackageCheck,
   Receipt,
+  KeyRound,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { io } from 'socket.io-client';
@@ -79,7 +80,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   activeOrder: initialOrder,
   onBackToHome,
 }) => {
-  const { user } = useUser();
+  const { user, token } = useUser();
   const [activeOrder, setActiveOrder] = useState<Order | null>(initialOrder);
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
   const [riderLocation, setRiderLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -151,12 +152,14 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   // the screen correct if the socket drops entirely.
   useEffect(() => {
     const orderId = activeOrder?.id;
-    if (!orderId) return;
+    if (!orderId || !token) return;
 
     const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000';
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
+      // Order rooms are authenticated; the token identifies the buyer.
+      auth: { token },
     });
 
     socket.on('connect', () => {
@@ -199,7 +202,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
       socket.disconnect();
       clearInterval(poll);
     };
-  }, [activeOrder?.id, refreshOrder]);
+  }, [activeOrder?.id, token, refreshOrder]);
 
   const currentStep = useMemo(
     () => (activeOrder ? timelineIndex(activeOrder.status) : -1),
@@ -454,6 +457,22 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
             </div>
           )}
         </div>
+
+        {/* Delivery handover code — shown to the customer only, once the rider
+            has collected the order. The rider types this in at the door. */}
+        {activeOrder.deliveryOtp && !isDelivered && !isCancelled && (
+          <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/40 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-300">
+              <KeyRound className="w-3.5 h-3.5" /> Delivery code
+            </div>
+            <div className="text-2xl font-black tracking-[0.35em] text-white">
+              {activeOrder.deliveryOtp}
+            </div>
+            <p className="text-[11px] text-emerald-200/80">
+              Share this 4-digit code with your rider only after you receive the order.
+            </p>
+          </div>
+        )}
 
         {/* Rider card */}
         {activeOrder.rider ? (

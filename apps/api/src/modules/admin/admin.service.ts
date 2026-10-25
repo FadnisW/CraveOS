@@ -1,75 +1,25 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { PaymentsService } from '../payments/payments.service';
+import {
+  getWalletRefundsByOrder,
+  localDayKey,
+  netCollectedPaise,
+} from '../../common/utils/revenue';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
-
-  /**
-   * Sum of wallet refunds already issued per order.
-   *
-   * A rejected brand ticket credits the customer's wallet but leaves the order
-   * alive. Without netting those credits out, the same money is counted as
-   * revenue twice: once on the original order, then again when the customer
-   * spends the refund.
-   */
-  private async getRefundsByOrder(): Promise<Map<string, number>> {
-    const rows = await this.prisma.walletTransaction.groupBy({
-      by: ['orderId'],
-      where: {
-        orderId: { not: null },
-        reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
-      },
-      _sum: { amountInPaise: true },
-    });
-
-    const map = new Map<string, number>();
-    for (const row of rows) {
-      if (row.orderId) map.set(row.orderId, row._sum.amountInPaise ?? 0);
-    }
-    return map;
-  }
-
-  /**
-   * Money actually collected for an order, net of wallet refunds.
-   *
-   *  - A successful gateway payment covers `amountInPaise` plus the wallet
-   *    portion reserved at checkout.
-   *  - A synthetic `wallet` payment covers the whole bill from wallet credit
-   *    (this includes orders the customer started as UPI but wallet covered).
-   *  - COD has no payment row: only the wallet portion is collected up front,
-   *    and the cash arrives on delivery.
-   */
-  private netCollectedPaise(
-    order: {
-      status: string;
-      paymentMethod: string;
-      finalPaidPaise: number;
-      walletAppliedPaise: number;
-      payment?: { status: string; amountInPaise: number; gateway: string } | null;
-    },
-    refundedPaise = 0,
-  ): { collectedPaise: number; gateway: 'RAZORPAY' | 'WALLET' | 'COD' } {
-    let grossPaise = 0;
-    let gateway: 'RAZORPAY' | 'WALLET' | 'COD' = 'RAZORPAY';
-
-    if (order.payment?.status === 'SUCCESS') {
-      if (order.payment.gateway === 'wallet') {
-        gateway = 'WALLET';
-        grossPaise = order.payment.amountInPaise;
-      } else {
-        gateway = 'RAZORPAY';
-        grossPaise = order.payment.amountInPaise + order.walletAppliedPaise;
-      }
-    } else if (order.paymentMethod === 'COD') {
-      gateway = 'COD';
-      grossPaise =
-        order.walletAppliedPaise +
-        (order.status === 'DELIVERED' ? order.finalPaidPaise : 0);
-    }
-
-    return { collectedPaise: Math.max(0, grossPaise - refundedPaise), gateway };
-  }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly payments: PaymentsService,
+  ) {}
 
   /**
    * Get high-level system KPIs for Admin Dashboard
@@ -327,7 +277,14 @@ export class AdminService {
           paymentMethod: true,
           finalPaidPaise: true,
           walletAppliedPaise: true,
-          payment: { select: { status: true, amountInPaise: true, gateway: true } },
+          payment: {
+              select: {
+                status: true,
+                amountInPaise: true,
+                gateway: true,
+                refundedAmountPaise: true,
+              },
+            },
           brandOrders: {
             select: {
               brandId: true,
@@ -337,14 +294,14 @@ export class AdminService {
           },
         },
       }),
-      this.getRefundsByOrder(),
+      getWalletRefundsByOrder(this.prisma),
     ]);
 
     const brandMap: Record<string, { count: number; revenue: number }> = {};
     const hubMap: Record<string, { count: number; revenue: number }> = {};
 
     for (const order of orders) {
-      const { collectedPaise } = this.netCollectedPaise(order, refunds.get(order.id) ?? 0);
+      const { collectedPaise } = netCollectedPaise(order, refunds.get(order.id) ?? 0);
 
       if (!hubMap[order.hubId]) hubMap[order.hubId] = { count: 0, revenue: 0 };
       hubMap[order.hubId].count += 1;
@@ -400,13 +357,6 @@ export class AdminService {
    * `toISOString()` is UTC, which shifts every IST order after 05:30 into the
    * previous day and makes the revenue chart disagree with the operator's date.
    */
-  private localDayKey(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
   /**
    * Admin Dashboard: Revenue trend over the last 7 days
    */
@@ -428,10 +378,17 @@ export class AdminService {
           paymentMethod: true,
           finalPaidPaise: true,
           walletAppliedPaise: true,
-          payment: { select: { status: true, amountInPaise: true, gateway: true } },
+          payment: {
+              select: {
+                status: true,
+                amountInPaise: true,
+                gateway: true,
+                refundedAmountPaise: true,
+              },
+            },
         },
       }),
-      this.getRefundsByOrder(),
+      getWalletRefundsByOrder(this.prisma),
     ]);
 
     const days: { date: string; revenuePaise: number; orderCount: number }[] = [];
@@ -440,15 +397,15 @@ export class AdminService {
       d.setDate(d.getDate() - i);
       d.setHours(0, 0, 0, 0);
 
-      const dayKey = this.localDayKey(d);
+      const dayKey = localDayKey(d);
       const dayOrders = orders.filter(
-        (order) => this.localDayKey(order.createdAt) === dayKey,
+        (order) => localDayKey(order.createdAt) === dayKey,
       );
 
       let revenuePaise = 0;
       let orderCount = 0;
       for (const order of dayOrders) {
-        const { collectedPaise } = this.netCollectedPaise(order, refunds.get(order.id) ?? 0);
+        const { collectedPaise } = netCollectedPaise(order, refunds.get(order.id) ?? 0);
         if (collectedPaise > 0) {
           revenuePaise += collectedPaise;
           orderCount += 1;
@@ -511,12 +468,22 @@ export class AdminService {
     operatingHoursStart?: string;
     operatingHoursEnd?: string;
   }) {
+    if (!data?.name?.trim() || !data?.city?.trim()) {
+      throw new BadRequestException('Hub name and city are required');
+    }
+    if (!Number.isFinite(Number(data.lat)) || !Number.isFinite(Number(data.lng))) {
+      throw new BadRequestException('Hub latitude and longitude are required');
+    }
+    if (!data.servicePolygon) {
+      throw new BadRequestException('A service polygon is required');
+    }
+
     return this.prisma.hub.create({
       data: {
-        name: data.name,
-        city: data.city,
-        lat: data.lat,
-        lng: data.lng,
+        name: data.name.trim(),
+        city: data.city.trim(),
+        lat: Number(data.lat),
+        lng: Number(data.lng),
         servicePolygon: data.servicePolygon,
         operatingHoursStart: data.operatingHoursStart || '08:00',
         operatingHoursEnd: data.operatingHoursEnd || '03:00',
@@ -531,10 +498,26 @@ export class AdminService {
     const hub = await this.prisma.hub.findUnique({ where: { id } });
     if (!hub) throw new NotFoundException(`Hub ${id} not found`);
 
-    return this.prisma.hub.update({
-      where: { id },
-      data,
-    });
+    // Whitelist mutable fields. Passing the request body straight to Prisma
+    // let a caller rewrite the primary key or unrelated columns.
+    const allowed = [
+      'name',
+      'city',
+      'lat',
+      'lng',
+      'servicePolygon',
+      'operatingHoursStart',
+      'operatingHoursEnd',
+    ];
+    const patch: Record<string, any> = {};
+    for (const key of allowed) {
+      if (data?.[key] !== undefined) patch[key] = data[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException('No editable hub fields were supplied');
+    }
+
+    return this.prisma.hub.update({ where: { id }, data: patch });
   }
 
   /**
@@ -544,11 +527,25 @@ export class AdminService {
     const hub = await this.prisma.hub.findUnique({ where: { id: hubId } });
     if (!hub) throw new NotFoundException(`Hub ${hubId} not found`);
 
+    if (role !== 'HUB_STAFF' && role !== 'HUB_MANAGER') {
+      throw new BadRequestException('role must be HUB_STAFF or HUB_MANAGER');
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new NotFoundException(`User ${userId} not found`);
+    if (target.role === 'ADMIN' || target.role === 'RIDER' || target.role === 'BRAND_OPS') {
+      throw new ForbiddenException(
+        'Admin, rider, and brand-ops accounts cannot be reassigned as hub staff',
+      );
+    }
+
     return this.prisma.user.update({
       where: { id: userId },
       data: {
         role,
         scopedHubId: hubId,
+        scopedBrandId: null,
+        adminSubRole: null,
       },
     });
   }
@@ -587,10 +584,28 @@ export class AdminService {
     const brand = await this.prisma.brand.findUnique({ where: { id } });
     if (!brand) throw new NotFoundException(`Brand ${id} not found`);
 
-    return this.prisma.brand.update({
-      where: { id },
-      data,
-    });
+    const allowed = [
+      'name',
+      'slug',
+      'tagline',
+      'cuisine',
+      'logoUrl',
+      'heroImageUrl',
+      'themeColor',
+      'isActive',
+      'isOwned',
+      'commissionPct',
+      'minOrderValue',
+    ];
+    const patch: Record<string, any> = {};
+    for (const key of allowed) {
+      if (data?.[key] !== undefined) patch[key] = data[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException('No editable brand fields were supplied');
+    }
+
+    return this.prisma.brand.update({ where: { id }, data: patch });
   }
 
   /**
@@ -600,13 +615,33 @@ export class AdminService {
     const brand = await this.prisma.brand.findUnique({ where: { id: brandId } });
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
 
+    const target = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!target) throw new NotFoundException(`User ${userId} not found`);
+    if (target.role === 'ADMIN' || target.role === 'RIDER') {
+      throw new ForbiddenException('Admin and rider accounts cannot be reassigned as brand ops');
+    }
+
     return this.prisma.user.update({
       where: { id: userId },
       data: {
         role: 'BRAND_OPS',
         scopedBrandId: brandId,
+        scopedHubId: null,
+        adminSubRole: null,
       },
     });
+  }
+
+  /**
+   * Finance: refund a captured payment back to its source.
+   */
+  async refundOrder(
+    orderId: string,
+    amountPaise: number | undefined,
+    reason: string,
+    actorId: string,
+  ) {
+    return this.payments.refundOrder(orderId, amountPaise, reason || 'Admin refund', actorId);
   }
 
   /**
@@ -720,10 +755,17 @@ export class AdminService {
           paymentMethod: true,
           finalPaidPaise: true,
           walletAppliedPaise: true,
-          payment: { select: { status: true, amountInPaise: true, gateway: true } },
+          payment: {
+              select: {
+                status: true,
+                amountInPaise: true,
+                gateway: true,
+                refundedAmountPaise: true,
+              },
+            },
         },
       }),
-      this.getRefundsByOrder(),
+      getWalletRefundsByOrder(this.prisma),
     ]);
 
     const byGateway = { RAZORPAY: 0, WALLET: 0, COD: 0 };
@@ -731,7 +773,7 @@ export class AdminService {
     let totalTransactions = 0;
 
     for (const order of orders) {
-      const { collectedPaise, gateway } = this.netCollectedPaise(
+      const { collectedPaise, gateway } = netCollectedPaise(
         order,
         refunds.get(order.id) ?? 0,
       );
@@ -775,27 +817,176 @@ export class AdminService {
   /**
    * RBAC & Staff Management: Create admin or ops staff account
    */
-  async createStaff(data: {
-    name: string;
-    email: string;
-    phone: string;
-    role: string;
-    adminSubRole?: any;
-    scopedHubId?: string;
-    scopedBrandId?: string;
-  }) {
-    return this.prisma.user.create({
+  async createStaff(
+    data: {
+      name: string;
+      email: string;
+      phone: string;
+      role: string;
+      adminSubRole?: string;
+      scopedHubId?: string;
+      scopedBrandId?: string;
+    },
+    actorId?: string,
+  ) {
+    const name = String(data?.name || '').trim();
+    const email = String(data?.email || '').trim().toLowerCase();
+    const phone = String(data?.phone || '').trim();
+    const role = String(data?.role || '').trim();
+
+    if (!name || !email || !phone) {
+      throw new BadRequestException('name, email and phone are required');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException('A valid email address is required');
+    }
+    if (!/^\+?[0-9]{10,15}$/.test(phone)) {
+      throw new BadRequestException('A valid phone number is required');
+    }
+
+    const validRoles = ['ADMIN', 'HUB_MANAGER', 'HUB_STAFF', 'BRAND_OPS'];
+    if (!validRoles.includes(role)) {
+      throw new BadRequestException(`role must be one of ${validRoles.join(', ')}`);
+    }
+
+    const validSubRoles = [
+      'SUPER_ADMIN',
+      'OPERATIONS_ADMIN',
+      'FINANCE_ADMIN',
+      'SUPPORT_ADMIN',
+      'MARKETING_ADMIN',
+    ];
+
+    let adminSubRole: string | null = null;
+    let scopedHubId: string | null = null;
+    let scopedBrandId: string | null = null;
+
+    if (role === 'ADMIN') {
+      const requested = String(data?.adminSubRole || '').trim();
+      if (!validSubRoles.includes(requested)) {
+        throw new BadRequestException(
+          `adminSubRole must be one of ${validSubRoles.join(', ')}`,
+        );
+      }
+      adminSubRole = requested;
+    } else if (role === 'HUB_MANAGER' || role === 'HUB_STAFF') {
+      if (!data?.scopedHubId) {
+        throw new BadRequestException('scopedHubId is required for hub staff');
+      }
+      const hub = await this.prisma.hub.findUnique({ where: { id: data.scopedHubId } });
+      if (!hub) throw new NotFoundException(`Hub ${data.scopedHubId} not found`);
+      scopedHubId = data.scopedHubId;
+    } else if (role === 'BRAND_OPS') {
+      if (!data?.scopedBrandId) {
+        throw new BadRequestException('scopedBrandId is required for brand ops');
+      }
+      const brand = await this.prisma.brand.findUnique({ where: { id: data.scopedBrandId } });
+      if (!brand) throw new NotFoundException(`Brand ${data.scopedBrandId} not found`);
+      scopedBrandId = data.scopedBrandId;
+    }
+
+    const duplicate = await this.prisma.user.findFirst({
+      where: { OR: [{ email }, { phone }] },
+      select: { id: true, email: true, phone: true },
+    });
+    if (duplicate) {
+      throw new ConflictException(
+        duplicate.email === email
+          ? 'A staff account with this email already exists'
+          : 'A staff account with this phone already exists',
+      );
+    }
+
+    const created = await this.prisma.user.create({
       data: {
-        name: data.name,
-        email: data.email,
-        phone: data.phone,
-        role: data.role,
-        adminSubRole: data.adminSubRole || null,
-        scopedHubId: data.scopedHubId || null,
-        scopedBrandId: data.scopedBrandId || null,
-        referralCode: `STF_${Date.now().toString(36).toUpperCase()}`,
+        name,
+        email,
+        phone,
+        role,
+        adminSubRole: adminSubRole as any,
+        scopedHubId,
+        scopedBrandId,
+        referralCode: `STF_${randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`,
       },
     });
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'STAFF_CREATED',
+        actorId: actorId || 'SYSTEM',
+        recordId: created.id,
+        diff: { email, phone, role, adminSubRole, scopedHubId, scopedBrandId },
+      },
+    });
+
+    return created;
+  }
+
+  /**
+   * Marketing: promotion approval queue.
+   *
+   * Brand ops create PricingRule rows with config.status = PENDING_ADMIN_APPROVAL.
+   * Marketing/super admin review them here; only APPROVED rules are treated as
+   * live by the pricing engine.
+   */
+  async getPromotions() {
+    const rules = await this.prisma.pricingRule.findMany({
+      orderBy: { startsAt: 'desc' },
+      take: 200,
+    });
+
+    const brandIds = [...new Set(rules.map((r) => r.brandId).filter(Boolean))] as string[];
+    const brands = await this.prisma.brand.findMany({
+      where: { id: { in: brandIds } },
+      select: { id: true, name: true },
+    });
+    const brandNameById = new Map(brands.map((b) => [b.id, b.name]));
+
+    return rules.map((rule) => {
+      const config = (rule.config as any) || {};
+      return {
+        ...rule,
+        brandName: rule.brandId ? brandNameById.get(rule.brandId) || rule.brandId : 'Platform',
+        status: config.status || 'APPROVED',
+        proposedAt: config.proposedAt || null,
+      };
+    });
+  }
+
+  async setPromotionStatus(
+    id: string,
+    status: 'APPROVED' | 'REJECTED',
+    actorId?: string,
+  ) {
+    if (status !== 'APPROVED' && status !== 'REJECTED') {
+      throw new BadRequestException('status must be APPROVED or REJECTED');
+    }
+
+    const rule = await this.prisma.pricingRule.findUnique({ where: { id } });
+    if (!rule) throw new NotFoundException(`Promotion ${id} not found`);
+
+    const config = {
+      ...((rule.config as any) || {}),
+      status,
+      reviewedAt: new Date().toISOString(),
+      reviewedBy: actorId || 'SYSTEM',
+    };
+
+    const updated = await this.prisma.pricingRule.update({
+      where: { id },
+      data: { config },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: `PROMOTION_${status}`,
+        actorId: actorId || 'SYSTEM',
+        recordId: id,
+        diff: { brandId: rule.brandId, type: rule.type, status },
+      },
+    });
+
+    return updated;
   }
 
   /**
