@@ -281,6 +281,15 @@ export class TicketsService {
       throw new ForbiddenException('Cannot resolve a closed ticket');
     }
 
+    // Resolution is a transition like any other. An unassigned ticket must be
+    // picked up first, otherwise it resolves with no owner and no work record.
+    const allowed = TicketsService.ALLOWED_STATUS_TRANSITIONS[ticket.status] || [];
+    if (!allowed.includes('RESOLVED')) {
+      throw new BadRequestException(
+        `Cannot resolve ticket in status ${ticket.status}; assign it first`,
+      );
+    }
+
     const updatedTicket = await this.prisma.ticket.update({
       where: { id },
       data: {
