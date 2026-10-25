@@ -86,6 +86,13 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const [riderLocation, setRiderLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  // Keep the delivery countdown honest while the page stays open.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     setActiveOrder(initialOrder);
@@ -211,6 +218,19 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
 
   const isCancelled = activeOrder?.status === 'CANCELLED';
   const isDelivered = activeOrder?.status === 'DELIVERED';
+
+  // The server stores a per-order estimate at checkout. Show the time that is
+  // actually left, not the original estimate forever.
+  const remainingEtaMins = useMemo(() => {
+    if (!activeOrder || isCancelled || isDelivered) return null;
+
+    const target = Number(activeOrder.estimatedDeliveryMins) || 30;
+    const createdAt = new Date(activeOrder.createdAt).getTime();
+    if (!Number.isFinite(createdAt)) return target;
+
+    const elapsed = Math.max(0, Math.floor((now - createdAt) / 60_000));
+    return Math.max(0, target - elapsed);
+  }, [activeOrder, isCancelled, isDelivered, now]);
 
   const riderPosition = useMemo(() => {
     const lat = riderLocation?.lat ?? activeOrder?.rider?.currentLat;
@@ -376,7 +396,9 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
                 ? 'Cancelled'
                 : isDelivered
                   ? 'Delivered'
-                  : `${activeOrder.estimatedDeliveryMins} Mins`}
+                  : remainingEtaMins === 0
+                    ? 'Arriving soon'
+                    : `${remainingEtaMins ?? activeOrder.estimatedDeliveryMins} Mins`}
             </div>
           </div>
         </div>

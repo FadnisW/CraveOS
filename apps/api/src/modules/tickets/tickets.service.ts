@@ -175,11 +175,34 @@ export class TicketsService {
       throw new ForbiddenException(`Cannot assign ticket in status ${ticket.status}`);
     }
 
+    // A ticket may only be assigned to a support/operations admin. Without
+    // this, any user id (including a customer's) could be supplied and the
+    // ticket payload would be emitted into that user's socket room.
+    const staff = await this.prisma.user.findUnique({
+      where: { id: staffId },
+      select: { id: true, role: true, adminSubRole: true },
+    });
+    if (!staff || staff.role !== 'ADMIN') {
+      throw new BadRequestException('Tickets can only be assigned to admin staff');
+    }
+    if (
+      !['SUPPORT_ADMIN', 'OPERATIONS_ADMIN', 'SUPER_ADMIN'].includes(
+        staff.adminSubRole || '',
+      )
+    ) {
+      throw new BadRequestException(
+        'Tickets can only be assigned to support, operations, or super admins',
+      );
+    }
+
     const updatedTicket = await this.prisma.ticket.update({
       where: { id },
       data: {
         assignedToId: staffId,
-        status: ticket.status === 'OPEN' ? 'IN_PROGRESS' : ticket.status,
+        // Assignment is its own state. Jumping straight to IN_PROGRESS skipped
+        // ASSIGNED entirely, so the queue could never show "assigned, not yet
+        // started" and the status history was wrong.
+        status: ticket.status === 'OPEN' ? 'ASSIGNED' : ticket.status,
       },
     });
 
@@ -192,6 +215,23 @@ export class TicketsService {
   }
 
   /**
+   * Legal status transitions. Assignment and resolution have their own
+   * endpoints, so this map only guards the explicit status route. Without it
+   * any caller could reopen a CLOSED ticket or skip straight from OPEN to
+   * RESOLVED, which broke the queue counts and the audit trail.
+   */
+  private static readonly ALLOWED_STATUS_TRANSITIONS: Record<
+    TicketStatus,
+    TicketStatus[]
+  > = {
+    OPEN: ['ASSIGNED', 'CLOSED'],
+    ASSIGNED: ['IN_PROGRESS', 'RESOLVED', 'CLOSED'],
+    IN_PROGRESS: ['RESOLVED', 'CLOSED'],
+    RESOLVED: ['CLOSED'],
+    CLOSED: [],
+  };
+
+  /**
    * Update ticket status
    */
   async updateTicketStatus(id: string, status: TicketStatus) {
@@ -201,6 +241,13 @@ export class TicketsService {
 
     if (!ticket) {
       throw new NotFoundException(`Ticket ${id} not found`);
+    }
+
+    const allowed = TicketsService.ALLOWED_STATUS_TRANSITIONS[ticket.status] || [];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException(
+        `Cannot move ticket from ${ticket.status} to ${status}`,
+      );
     }
 
     const updatedTicket = await this.prisma.ticket.update({

@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
@@ -82,18 +83,80 @@ export class BrandOpsService {
 
   /**
    * Get Brand Menu (§5.2)
+   *
+   * Menu items are stored once per kitchen so each hub can 86 independently.
+   * The brand console works on the logical item, so collapse every group to
+   * one row and expose the per-hub availability alongside it.
    */
   async getBrandMenu(brandId: string) {
-    const brandKitchen = await this.prisma.brandKitchen.findFirst({
-      where: { brandId },
-      include: {
-        menuItems: {
-          orderBy: { name: 'asc' },
-        },
-      },
+    const items = await this.prisma.menuItem.findMany({
+      where: { brandKitchen: { brandId } },
+      include: { brandKitchen: { select: { hubId: true } } },
+      orderBy: [{ name: 'asc' }, { brandKitchenId: 'asc' }],
     });
 
-    return brandKitchen?.menuItems || [];
+    const groups = new Map<string, typeof items>();
+    for (const item of items) {
+      const key = item.menuItemGroupId || item.id;
+      const group = groups.get(key) || [];
+      group.push(item);
+      groups.set(key, group);
+    }
+
+    // Deterministic representative: the lexicographically first hub. This is
+    // also the row `createMenuItem` returns (kitchens are ordered by hub id).
+    for (const group of groups.values()) {
+      group.sort((a, b) => a.brandKitchen.hubId.localeCompare(b.brandKitchen.hubId));
+    }
+
+    return [...groups.values()].map((group) => {
+      const canonical = group[0];
+      return {
+        ...canonical,
+        // The brand-level "Live" switch is only true when every hub is live.
+        isAvailable: group.every((row) => row.isAvailable),
+        hubIds: group.map((row) => row.brandKitchen.hubId),
+        hubAvailability: Object.fromEntries(
+          group.map((row) => [row.brandKitchen.hubId, row.isAvailable]),
+        ),
+      };
+    });
+  }
+
+  /**
+   * Every kitchen a brand serves. A brand with no kitchen is attached to the
+   * first hub so a newly created brand is still usable.
+   */
+  private async kitchensForBrand(brandId: string) {
+    let kitchens = await this.prisma.brandKitchen.findMany({
+      where: { brandId },
+      orderBy: { hubId: 'asc' },
+    });
+
+    if (kitchens.length === 0) {
+      const defaultHub = await this.prisma.hub.findFirst({ orderBy: { id: 'asc' } });
+      if (!defaultHub) {
+        throw new BadRequestException('No default hub found to attach brand kitchen');
+      }
+      const created = await this.prisma.brandKitchen.create({
+        data: { brandId, hubId: defaultHub.id, isOpen: true },
+      });
+      kitchens = [created];
+    }
+
+    return kitchens;
+  }
+
+  /** The id shared by every per-kitchen copy of one logical menu item. */
+  private groupIdOf(item: { id: string; menuItemGroupId?: string | null }) {
+    return item.menuItemGroupId || item.id;
+  }
+
+  /** Prisma filter matching every copy of a logical item. */
+  private groupWhere(item: { id: string; menuItemGroupId?: string | null }) {
+    return item.menuItemGroupId
+      ? { OR: [{ id: item.id }, { menuItemGroupId: item.menuItemGroupId }] }
+      : { id: item.id };
   }
 
   /**
@@ -138,46 +201,49 @@ export class BrandOpsService {
       data?.memberPriceInPaise,
     );
 
-    // Find or link with the brand's kitchen
-    let brandKitchen = await this.prisma.brandKitchen.findFirst({
-      where: { brandId },
-    });
+    // Create one row per kitchen. A single HSR-only row is why a second hub's
+    // stock board was empty and its checkout failed with a cross-hub conflict.
+    const kitchens = await this.kitchensForBrand(brandId);
+    const groupId = randomUUID();
 
-    if (!brandKitchen) {
-      // Link to first available hub
-      const defaultHub = await this.prisma.hub.findFirst();
-      if (!defaultHub) throw new BadRequestException('No default hub found to attach brand kitchen');
+    const payload = {
+      name,
+      description: data.description || '',
+      mrpInPaise: mrp,
+      memberPriceInPaise: member,
+      imageUrl:
+        data.imageUrl ||
+        'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+      isVeg: data.isVeg !== undefined ? data.isVeg : true,
+      isBestseller: data.isBestseller || false,
+      isAvailable: data.isAvailable !== undefined ? !!data.isAvailable : true,
+      category: data.category || 'Main Course',
+      rating: data.rating || 4.8,
+      dietType: data.dietType || (data.isVeg ? 'VEG' : 'NON_VEG'),
+      spiceLevel: data.spiceLevel || 0,
+      gstPct: data.gstPct || 5,
+      variants: data.variants || null,
+      addOns: data.addOns || null,
+      scheduledFrom: data.scheduledFrom || null,
+      scheduledTo: data.scheduledTo || null,
+    };
 
-      brandKitchen = await this.prisma.brandKitchen.create({
-        data: {
-          brandId,
-          hubId: defaultHub.id,
-          isOpen: true,
-        },
-      });
-    }
+    const rows = await this.prisma.$transaction(
+      kitchens.map((kitchen) =>
+        this.prisma.menuItem.create({
+          data: {
+            ...payload,
+            brandKitchenId: kitchen.id,
+            menuItemGroupId: groupId,
+          },
+        }),
+      ),
+    );
 
-    return this.prisma.menuItem.create({
-      data: {
-        brandKitchenId: brandKitchen.id,
-        name,
-        description: data.description || '',
-        mrpInPaise: mrp,
-        memberPriceInPaise: member,
-        imageUrl: data.imageUrl || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        isVeg: data.isVeg !== undefined ? data.isVeg : true,
-        isBestseller: data.isBestseller || false,
-        category: data.category || 'Main Course',
-        rating: data.rating || 4.8,
-        dietType: data.dietType || (data.isVeg ? 'VEG' : 'NON_VEG'),
-        spiceLevel: data.spiceLevel || 0,
-        gstPct: data.gstPct || 5,
-        variants: data.variants || null,
-        addOns: data.addOns || null,
-        scheduledFrom: data.scheduledFrom || null,
-        scheduledTo: data.scheduledTo || null,
-      },
-    });
+    return {
+      ...rows[0],
+      hubIds: kitchens.map((kitchen) => kitchen.hubId),
+    };
   }
 
   /**
@@ -236,10 +302,14 @@ export class BrandOpsService {
       throw new BadRequestException('No editable menu item fields were supplied');
     }
 
-    return this.prisma.menuItem.update({
-      where: { id: itemId },
+    // Menu content and the brand-level Live switch apply to every kitchen.
+    // Per-hub 86 lives on the hub-ops / catalog route instead.
+    await this.prisma.menuItem.updateMany({
+      where: this.groupWhere(item),
       data: patch,
     });
+
+    return this.prisma.menuItem.findUnique({ where: { id: itemId } });
   }
 
   /**
@@ -256,9 +326,11 @@ export class BrandOpsService {
       throw new BadRequestException(`MenuItem '${itemId}' does not belong to brand '${brandId}'`);
     }
 
-    return this.prisma.menuItem.delete({
-      where: { id: itemId },
+    const result = await this.prisma.menuItem.deleteMany({
+      where: this.groupWhere(item),
     });
+
+    return { id: itemId, deleted: true, copies: result.count };
   }
 
   /**
@@ -286,7 +358,15 @@ export class BrandOpsService {
     });
     const byId = new Map(items.map((item) => [item.id, item]));
 
-    const patches = updates.map((u) => {
+    // Several updates can target copies of the same logical item. Collapse
+    // them by group so the last price supplied wins and every kitchen copy
+    // stays in sync.
+    const patches = new Map<
+      string,
+      { where: any; mrpInPaise: number; memberPriceInPaise: number }
+    >();
+
+    for (const u of updates) {
       const item = byId.get(u?.itemId);
       if (!item) {
         throw new NotFoundException(`MenuItem '${u?.itemId}' not found`);
@@ -302,17 +382,17 @@ export class BrandOpsService {
         u.memberPriceInPaise,
       );
 
-      return {
-        id: item.id,
+      patches.set(this.groupIdOf(item), {
+        where: this.groupWhere(item),
         mrpInPaise: mrp,
         memberPriceInPaise: member,
-      };
-    });
+      });
+    }
 
     return this.prisma.$transaction(
-      patches.map((patch) =>
-        this.prisma.menuItem.update({
-          where: { id: patch.id },
+      [...patches.values()].map((patch) =>
+        this.prisma.menuItem.updateMany({
+          where: patch.where,
           data: {
             mrpInPaise: patch.mrpInPaise,
             memberPriceInPaise: patch.memberPriceInPaise,
@@ -378,7 +458,10 @@ export class BrandOpsService {
       include: { items: true },
     });
 
-    const itemMap: Record<string, { name: string; quantitySold: number; revenuePaise: number }> = {};
+    const itemMap: Record<
+      string,
+      { menuItemId: string; name: string; quantitySold: number; revenuePaise: number }
+    > = {};
     let rejectedCount = 0;
 
     for (const bo of brandOrders) {
@@ -387,25 +470,31 @@ export class BrandOpsService {
         continue;
       }
       for (const item of bo.items) {
-        if (!itemMap[item.menuItemId]) {
-          itemMap[item.menuItemId] = {
+        // The same logical item has one row per kitchen. Group by the name
+        // snapshot so a dish sold at two hubs is one line, not two.
+        const key = item.nameSnapshot || item.menuItemId;
+        if (!itemMap[key]) {
+          itemMap[key] = {
+            menuItemId: item.menuItemId,
             name: item.nameSnapshot,
             quantitySold: 0,
             revenuePaise: 0,
           };
         }
-        itemMap[item.menuItemId].quantitySold += item.quantity;
-        itemMap[item.menuItemId].revenuePaise += item.priceSnapshot * item.quantity;
+        itemMap[key].quantitySold += item.quantity;
+        itemMap[key].revenuePaise += item.priceSnapshot * item.quantity;
       }
     }
 
-    const itemsPerformance = Object.entries(itemMap).map(([id, val]) => ({
-      menuItemId: id,
-      name: val.name,
-      quantitySold: val.quantitySold,
-      revenuePaise: val.revenuePaise,
-      revenueRupees: val.revenuePaise / 100,
-    })).sort((a, b) => b.quantitySold - a.quantitySold);
+    const itemsPerformance = Object.values(itemMap)
+      .map((val) => ({
+        menuItemId: val.menuItemId,
+        name: val.name,
+        quantitySold: val.quantitySold,
+        revenuePaise: val.revenuePaise,
+        revenueRupees: val.revenuePaise / 100,
+      }))
+      .sort((a, b) => b.quantitySold - a.quantitySold);
 
     return {
       brandId,

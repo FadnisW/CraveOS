@@ -960,6 +960,67 @@ async function main() {
   }
 
   console.log(`✅ Catalog parity: ${parityAdded} storefront items added to the database.`);
+
+  // 9. Multi-hub menu parity. Menu items are stored per kitchen so each hub
+  //    can 86 independently. The base seed only attached items to HSR, which
+  //    left every other hub with an empty stock board and a checkout that
+  //    rejected its own catalogue. Link copies by `menuItemGroupId` and create
+  //    any missing kitchen copy. Idempotent: existing copies are never touched.
+  const allMenuItems = await prisma.menuItem.findMany({
+    include: { brandKitchen: { select: { brandId: true } } },
+  });
+  const canonicalItems = allMenuItems.filter(
+    (item) => !item.menuItemGroupId || item.menuItemGroupId === item.id,
+  );
+
+  let mirrored = 0;
+  for (const item of canonicalItems) {
+    const groupId = item.menuItemGroupId || item.id;
+    if (!item.menuItemGroupId) {
+      await prisma.menuItem.update({
+        where: { id: item.id },
+        data: { menuItemGroupId: groupId },
+      });
+    }
+
+    const kitchens = await prisma.brandKitchen.findMany({
+      where: { brandId: item.brandKitchen.brandId },
+    });
+
+    for (const kitchen of kitchens) {
+      if (kitchen.id === item.brandKitchenId) continue;
+
+      await prisma.menuItem.upsert({
+        where: { id: `${groupId}__${kitchen.hubId}` },
+        update: {}, // never clobber a hub's own 86 / price override
+        create: {
+          id: `${groupId}__${kitchen.hubId}`,
+          brandKitchenId: kitchen.id,
+          menuItemGroupId: groupId,
+          name: item.name,
+          description: item.description,
+          mrpInPaise: item.mrpInPaise,
+          memberPriceInPaise: item.memberPriceInPaise,
+          imageUrl: item.imageUrl,
+          isVeg: item.isVeg,
+          isBestseller: item.isBestseller,
+          isAvailable: item.isAvailable,
+          category: item.category,
+          rating: item.rating,
+          dietType: item.dietType,
+          spiceLevel: item.spiceLevel,
+          gstPct: item.gstPct,
+          variants: item.variants === null ? undefined : item.variants,
+          addOns: item.addOns === null ? undefined : item.addOns,
+          scheduledFrom: item.scheduledFrom,
+          scheduledTo: item.scheduledTo,
+        },
+      });
+      mirrored += 1;
+    }
+  }
+
+  console.log(`✅ Multi-hub menu parity: ${mirrored} kitchen copies ensured.`);
 }
 
 main()

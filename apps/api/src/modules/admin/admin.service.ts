@@ -165,20 +165,54 @@ export class AdminService {
   }
 
   /**
-   * Atomically adjust user wallet balance and append transaction record
+   * Atomically adjust user wallet balance and append transaction record.
+   * Admin adjustments are money movements, so they are validated, serialized
+   * with a row lock, prevented from going negative, and audited.
    */
-  async adjustWallet(userId: string, amountInPaise: number, reason: string) {
+  async adjustWallet(
+    userId: string,
+    amountInPaise: number,
+    reason: string,
+    actorId: string,
+  ) {
+    const amount = Number(amountInPaise);
+    if (!Number.isInteger(amount) || amount === 0) {
+      throw new BadRequestException(
+        'amountInPaise must be a non-zero whole number of paise',
+      );
+    }
+
+    const trimmedReason = String(reason || '').trim();
+    if (!trimmedReason) {
+      throw new BadRequestException('A reason is required for a wallet adjustment');
+    }
+
     const userExists = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!userExists) {
       throw new NotFoundException(`User with ID '${userId}' not found`);
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Serialize concurrent adjustments for the same wallet.
+      await tx.$executeRaw`SELECT "walletBalance" FROM "users" WHERE id = ${userId} FOR UPDATE`;
+
+      const current = await tx.user.findUnique({
+        where: { id: userId },
+        select: { walletBalance: true },
+      });
+
+      const nextBalance = (current?.walletBalance ?? 0) + amount;
+      if (nextBalance < 0) {
+        throw new ConflictException(
+          'This adjustment would make the wallet balance negative',
+        );
+      }
+
       const updatedUser = await tx.user.update({
         where: { id: userId },
         data: {
           walletBalance: {
-            increment: amountInPaise,
+            increment: amount,
           },
         },
       });
@@ -186,8 +220,22 @@ export class AdminService {
       const txn = await tx.walletTransaction.create({
         data: {
           userId,
-          amountInPaise,
-          reason,
+          amountInPaise: amount,
+          reason: trimmedReason,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'WALLET_ADJUSTED',
+          actorId,
+          recordId: userId,
+          diff: {
+            amountInPaise: amount,
+            reason: trimmedReason,
+            previousBalancePaise: current?.walletBalance ?? 0,
+            newBalancePaise: updatedUser.walletBalance,
+          },
         },
       });
 

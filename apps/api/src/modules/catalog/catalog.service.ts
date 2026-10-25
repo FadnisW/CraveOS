@@ -37,10 +37,61 @@ export class CatalogService {
     return brand;
   }
 
+  /**
+   * Collapse the per-kitchen copies of a menu item into one storefront row.
+   *
+   * A brand that serves two hubs has two MenuItem rows. The customer should
+   * see one card, advertised only at hubs where a copy is actually live.
+   */
+  private collapseMenuRows(rows: any[]) {
+    const groups = new Map<string, any[]>();
+    for (const row of rows) {
+      const key = row.menuItemGroupId || row.id;
+      const group = groups.get(key) || [];
+      group.push(row);
+      groups.set(key, group);
+    }
+
+    const result: any[] = [];
+    for (const group of groups.values()) {
+      group.sort((a, b) =>
+        String(a.brandKitchen?.hubId || '').localeCompare(
+          String(b.brandKitchen?.hubId || ''),
+        ),
+      );
+
+      const live = group.filter((row) => row.isAvailable);
+      if (live.length === 0) continue; // 86'd at every hub
+
+      const representative = live[0];
+      const liveHubIds = new Set(
+        live.map((row) => row.brandKitchen?.hubId).filter(Boolean),
+      );
+      const brand = representative.brandKitchen?.brand;
+
+      result.push({
+        ...representative,
+        brandKitchen: {
+          ...representative.brandKitchen,
+          brand: brand
+            ? {
+                ...brand,
+                // availableHubIds is derived from this list on the storefront.
+                brandKitchens: (brand.brandKitchens || []).filter((kitchen: any) =>
+                  liveHubIds.has(kitchen.hubId),
+                ),
+              }
+            : brand,
+        },
+      });
+    }
+
+    return result;
+  }
+
   async getMenuItems(brandSlug?: string, category?: string) {
-    return this.prisma.menuItem.findMany({
+    const rows = await this.prisma.menuItem.findMany({
       where: {
-        isAvailable: true,
         ...(brandSlug
           ? { brandKitchen: { brand: { slug: brandSlug } } }
           : {}),
@@ -62,15 +113,17 @@ export class CatalogService {
           },
         },
       },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
+
+    return this.collapseMenuRows(rows);
   }
 
   async searchItems(query: string) {
     if (!query || query.trim().length === 0) return [];
 
-    return this.prisma.menuItem.findMany({
+    const rows = await this.prisma.menuItem.findMany({
       where: {
-        isAvailable: true,
         OR: [
           { name: { contains: query, mode: 'insensitive' } },
           { description: { contains: query, mode: 'insensitive' } },
@@ -92,7 +145,10 @@ export class CatalogService {
           },
         },
       },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
+
+    return this.collapseMenuRows(rows);
   }
 
   async toggle86Item(
@@ -106,7 +162,7 @@ export class CatalogService {
   ) {
     const item = await this.prisma.menuItem.findUnique({
       where: { id: itemId },
-      include: { brandKitchen: { select: { brandId: true, hubId: true } } },
+      include: { brandKitchen: { select: { id: true, brandId: true, hubId: true } } },
     });
 
     if (!item) {
@@ -123,13 +179,53 @@ export class CatalogService {
       throw new ForbiddenException('You can only manage menu items for your own brand');
     }
 
-    // A hub operator may only 86 items in their own kitchen. Without this a
-    // staff account at one hub could take another hub's menu offline.
-    if (
-      (actor?.role === 'HUB_STAFF' || actor?.role === 'HUB_MANAGER') &&
-      actor.scopedHubId !== item.brandKitchen.hubId
-    ) {
-      throw new ForbiddenException('You can only manage menu items for your own hub');
+    // A hub operator may only 86 the copy that belongs to their own hub. The
+    // brand must actually serve that hub; otherwise the item does not exist
+    // on their menu at all.
+    if (actor?.role === 'HUB_STAFF' || actor?.role === 'HUB_MANAGER') {
+      const kitchen = actor.scopedHubId
+        ? await this.prisma.brandKitchen.findUnique({
+            where: {
+              brandId_hubId: {
+                brandId: item.brandKitchen.brandId,
+                hubId: actor.scopedHubId,
+              },
+            },
+          })
+        : null;
+
+      if (!kitchen) {
+        throw new ForbiddenException('You can only manage menu items for your own hub');
+      }
+
+      const hubCopy = item.menuItemGroupId
+        ? await this.prisma.menuItem.findFirst({
+            where: {
+              menuItemGroupId: item.menuItemGroupId,
+              brandKitchenId: kitchen.id,
+            },
+          })
+        : kitchen.id === item.brandKitchenId
+          ? item
+          : null;
+
+      if (!hubCopy) {
+        throw new NotFoundException('This item has no menu row for your hub');
+      }
+
+      return this.prisma.menuItem.update({
+        where: { id: hubCopy.id },
+        data: { isAvailable },
+      });
+    }
+
+    // Brand ops and platform admins toggle the whole logical item.
+    if (actor?.role === 'BRAND_OPS' && item.menuItemGroupId) {
+      await this.prisma.menuItem.updateMany({
+        where: { menuItemGroupId: item.menuItemGroupId },
+        data: { isAvailable },
+      });
+      return { ...item, isAvailable };
     }
 
     return this.prisma.menuItem.update({

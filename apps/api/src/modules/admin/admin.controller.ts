@@ -69,11 +69,17 @@ export class AdminController {
   @Roles('ADMIN')
   @AdminSubRoles('SUPPORT_ADMIN', 'FINANCE_ADMIN', 'SUPER_ADMIN')
   async adjustWallet(
+    @Request() req: any,
     @Param('id') id: string,
     @Body('amountInPaise') amountInPaise: number,
     @Body('reason') reason: string,
   ) {
-    return this.adminService.adjustWallet(id, amountInPaise, reason);
+    return this.adminService.adjustWallet(
+      id,
+      amountInPaise,
+      reason,
+      req.user?.sub,
+    );
   }
 
   /**

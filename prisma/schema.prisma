@@ -175,6 +175,10 @@ model BrandKitchen {
 model MenuItem {
   id                 String       @id @default(cuid())
   brandKitchenId     String
+  // Links the per-kitchen copies of one logical menu item. A brand that
+  // serves two hubs has two MenuItem rows (so each hub can 86 independently)
+  // that share this id. Null on legacy rows; treat `id` as the group then.
+  menuItemGroupId    String?
   name               String
   description        String
   mrpInPaise         Int          // Max Retail Price
@@ -186,7 +190,7 @@ model MenuItem {
   category           String
   rating             Float        @default(4.5)
   dietType           String?      // "VEG" | "NON_VEG" | "EGG" | "JAIN"
-  spiceLevel         Int?         // 0–3
+  spiceLevel         Int?         // 0-3
   gstPct             Int?         // e.g. 5 for 5% GST
   variants           Json?        // [{ name: "Small", priceInPaise: 19900 }, ...]
   addOns             Json?        // [{ name: "Extra cheese", priceInPaise: 5000 }, ...]
@@ -195,6 +199,7 @@ model MenuItem {
   brandKitchen       BrandKitchen @relation(fields: [brandKitchenId], references: [id], onDelete: Cascade)
 
   @@index([brandKitchenId, isAvailable])
+  @@index([menuItemGroupId])
   @@map("menu_items")
 }
 
@@ -236,6 +241,7 @@ model Order {
   taxPaise           Int
   walletAppliedPaise Int            @default(0) // wallet money consumed by this order (paise)
   finalPaidPaise     Int            // amount charged to the payment gateway (paise)
+  estimatedDeliveryMins Int         @default(30) // prep + hub-to-address travel estimate
   discountBreakdown  Json           // { membership, coupon, wallet }
   brandOrders        BrandOrder[]
   payment            Payment?

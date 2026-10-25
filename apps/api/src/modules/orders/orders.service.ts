@@ -66,6 +66,36 @@ export class OrdersService {
   // Order creation
   // ---------------------------------------------------------------------------
 
+  /**
+   * Prep time plus a straight-line hub-to-address travel estimate at a
+   * realistic city speed. This is deliberately deterministic: the customer
+   * gets a per-order target instead of a hardcoded "25 mins", and a real
+   * routing provider can replace this later without changing the schema.
+   */
+  private estimateDeliveryMinutes(
+    hub: { lat?: number | null; lng?: number | null },
+    address: { lat?: number | null; lng?: number | null },
+  ) {
+    const hubLat = Number(hub?.lat);
+    const hubLng = Number(hub?.lng);
+    const lat = Number(address?.lat);
+    const lng = Number(address?.lng);
+
+    if (![hubLat, hubLng, lat, lng].every(Number.isFinite)) return 30;
+
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const dLat = toRad(lat - hubLat);
+    const dLng = toRad(lng - hubLng);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(hubLat)) * Math.cos(toRad(lat)) * Math.sin(dLng / 2) ** 2;
+    const distanceKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    const prepMins = 18;
+    const travelMins = (distanceKm / 18) * 60; // ~18 km/h city average
+    return Math.min(75, Math.max(20, Math.round(prepMins + travelMins)));
+  }
+
   async createOrder(
     dto: CreateOrderDto,
     actor: AuthenticatedActor,
@@ -137,10 +167,15 @@ export class OrdersService {
       throw new BadRequestException('Could not resolve a delivery hub for this address');
     }
 
-    const hub = await this.prisma.hub.findUnique({ where: { id: hubId }, select: { id: true } });
+    const hub = await this.prisma.hub.findUnique({
+      where: { id: hubId },
+      select: { id: true, lat: true, lng: true },
+    });
     if (!hub) {
       throw new BadRequestException('The selected hub does not exist');
     }
+
+    const estimatedDeliveryMins = this.estimateDeliveryMinutes(hub, address);
 
     // -------------------------------------------------------------------------
     // Server-authoritative pricing: every rupee comes from the database.
@@ -152,21 +187,49 @@ export class OrdersService {
       include: { brandKitchen: true },
     });
 
+    // A cart may hold the copy of an item owned by another kitchen of the
+    // same brand (the storefront shows one card per logical item). Resolve
+    // that logical item to the copy that belongs to the selected hub.
+    const groupIds = [
+      ...new Set(
+        dbItems
+          .map((item) => item.menuItemGroupId)
+          .filter((groupId): groupId is string => !!groupId),
+      ),
+    ];
+    const hubCopies = groupIds.length
+      ? await this.prisma.menuItem.findMany({
+          where: {
+            menuItemGroupId: { in: groupIds },
+            brandKitchen: { hubId },
+          },
+          include: { brandKitchen: true },
+        })
+      : [];
+    const copyByGroup = new Map(
+      hubCopies.map((item) => [item.menuItemGroupId as string, item]),
+    );
+
     const lines = menuItemIds.map((menuItemId) => {
-      const dbItem = dbItems.find((i) => i.id === menuItemId);
-      if (!dbItem) {
+      const requested = dbItems.find((i) => i.id === menuItemId);
+      if (!requested) {
         throw new BadRequestException('A cart item is no longer on the menu. Please refresh your cart.');
+      }
+
+      const dbItem =
+        requested.brandKitchen.hubId === hubId
+          ? requested
+          : requested.menuItemGroupId
+            ? copyByGroup.get(requested.menuItemGroupId)
+            : undefined;
+
+      if (!dbItem || !dbItem.brandKitchen) {
+        throw new BadRequestException(
+          `Cross-Hub Conflict: '${requested.name}' is not served from the selected hub.`,
+        );
       }
       if (!dbItem.isAvailable) {
         throw new ConflictException(`'${dbItem.name}' is currently out of stock (86'd).`);
-      }
-      if (!dbItem.brandKitchen) {
-        throw new BadRequestException(`'${dbItem.name}' is not attached to a kitchen.`);
-      }
-      if (dbItem.brandKitchen.hubId !== hubId) {
-        throw new BadRequestException(
-          `Cross-Hub Conflict: '${dbItem.name}' is not served from the selected hub.`,
-        );
       }
 
       return {
@@ -267,6 +330,7 @@ export class OrdersService {
           taxPaise,
           walletAppliedPaise,
           finalPaidPaise,
+          estimatedDeliveryMins,
           paymentMethod,
           discountBreakdown: priceBreakdown.savingsSummary,
           status: 'PLACED',
@@ -901,6 +965,20 @@ export class OrdersService {
       }
       const moneyCollected = collectedPaise > 0;
 
+      // A second rejection must not refund the first rejection's share again.
+      // Rejecting brand A (partial) then brand B (all rejected) used to refund
+      // the full collected amount twice. Only the unrefunded remainder is
+      // refundable.
+      const priorRefunds = await tx.walletTransaction.aggregate({
+        where: {
+          orderId,
+          reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
+        },
+        _sum: { amountInPaise: true },
+      });
+      const alreadyRefundedPaise = priorRefunds._sum.amountInPaise ?? 0;
+      const refundablePaise = Math.max(0, collectedPaise - alreadyRefundedPaise);
+
       const itemRefundPaise = updated.items.reduce(
         (sum, item) => sum + item.priceSnapshot * item.quantity,
         0,
@@ -911,11 +989,11 @@ export class OrdersService {
       );
       const savingsReductionPaise = Math.max(0, mrpReductionPaise - itemRefundPaise);
 
-      // Full rejection refunds everything actually collected. Partial rejection
-      // can never refund more than was collected.
+      // Full rejection refunds everything still unrefunded. Partial rejection
+      // can never refund more than remains.
       const refundPaise = allRejected
-        ? collectedPaise
-        : Math.min(itemRefundPaise, collectedPaise);
+        ? refundablePaise
+        : Math.min(itemRefundPaise, refundablePaise);
 
       if (moneyCollected && refundPaise > 0) {
         await tx.user.update({

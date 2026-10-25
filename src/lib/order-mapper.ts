@@ -64,6 +64,7 @@ export type ApiOrder = {
   taxPaise: number;
   walletAppliedPaise?: number;
   finalPaidPaise: number;
+  estimatedDeliveryMins?: number;
   discountBreakdown?: { couponDiscount?: number } | null;
   brandOrders?: ApiBrandOrder[];
   address?: ApiAddress | null;
@@ -187,7 +188,7 @@ export function mapApiOrder(order: ApiOrder): Order {
     couponDiscount: Number(order.discountBreakdown?.couponDiscount) || 0,
     finalPaidAmount: paiseToRupees(order.finalPaidPaise),
     paymentMethod,
-    estimatedDeliveryMins: 25,
+    estimatedDeliveryMins: Number(order.estimatedDeliveryMins) || 30,
     rider: rider
       ? {
           name: rider.name,
