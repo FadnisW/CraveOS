@@ -6,6 +6,7 @@ import { useUser } from '../context/UserContext';
 import { SavedAddress, Order } from '../types';
 import { api } from '../lib/api-client';
 import { mapApiOrder } from '../lib/order-mapper';
+import { loadRazorpay, openRazorpay } from '../lib/razorpay';
 import {
   MapPin,
   ShieldCheck,
@@ -35,17 +36,15 @@ interface ServerQuote {
   couponDiscount: number;
   couponApplied: boolean;
   couponInvalid: boolean;
+  couponMessage: string | null;
   deliveryFee: number;
   packagingFee: number;
   taxes: number;
   grossTotal: number;
+  walletBalancePaise: number | null;
   walletBalanceRupees: number | null;
   walletApplied: number;
   finalPayable: number;
-}
-
-function paymentError(message: string, code: 'DISMISSED' | 'FAILED') {
-  return Object.assign(new Error(message), { code });
 }
 
 /**
@@ -59,26 +58,6 @@ function newIdempotencyKey() {
     return crypto.randomUUID();
   }
   return `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function loadRazorpay(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') {
-      reject(new Error('Payments are only available in the browser.'));
-      return;
-    }
-    if ((window as any).Razorpay) {
-      resolve();
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.onload = () => resolve();
-    script.onerror = () =>
-      reject(new Error('Could not load the payment gateway. Check your connection and try again.'));
-    document.body.appendChild(script);
-  });
 }
 
 export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
@@ -100,6 +79,12 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   const [quoteAttempt, setQuoteAttempt] = useState<number>(0);
   const [couponInput, setCouponInput] = useState<string>('');
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
+  const [serverAddress, setServerAddress] = useState<{
+    id: string;
+    resolvedHubId: string;
+  } | null>(null);
+  const [addressResolving, setAddressResolving] = useState<boolean>(false);
+  const [addressError, setAddressError] = useState<string | null>(null);
 
   const idempotencyKeyRef = useRef<string>(newIdempotencyKey());
   const attemptSignature = useMemo(
@@ -117,10 +102,82 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     idempotencyKeyRef.current = newIdempotencyKey();
   }, [attemptSignature]);
 
+  // A quote needs a database address: the hub, serviceability and delivery fee
+  // are resolved from it. The storefront's local address book is provisioned
+  // on the server before any total is requested.
+  useEffect(() => {
+    if (!isAuthenticated || !activeAddress) {
+      setServerAddress(null);
+      setAddressError(null);
+      setAddressResolving(false);
+      return;
+    }
+
+    let cancelled = false;
+    setServerAddress(null);
+    setAddressError(null);
+    setAddressResolving(true);
+
+    api.addresses
+      .ensure({
+        type: activeAddress.type,
+        label: activeAddress.label,
+        addressLine: activeAddress.addressLine,
+        landmark: activeAddress.landmark,
+        city: activeAddress.city,
+        pincode: activeAddress.pincode,
+        lat: activeAddress.lat,
+        lng: activeAddress.lng,
+        isDefault: true,
+      })
+      .then((ensured: any) => {
+        if (cancelled) return;
+        if (!ensured?.id || !ensured?.resolvedHubId) {
+          throw new Error('This address is not inside a serviceable delivery hub.');
+        }
+        setServerAddress({
+          id: ensured.id,
+          resolvedHubId: ensured.resolvedHubId,
+        });
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setAddressError(
+            err?.message || 'Could not verify this delivery address.',
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAddressResolving(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAuthenticated,
+    activeAddress?.id,
+    activeAddress?.addressLine,
+    activeAddress?.lat,
+    activeAddress?.lng,
+  ]);
+
   // The server is the source of truth for every rupee: membership, coupon
-  // validity, delivery/packaging fees and the wallet cap.
+  // validity, delivery/packaging fees, GST and the wallet cap.
   useEffect(() => {
     if (!cartItems.length) {
+      setQuote(null);
+      setQuoteError(null);
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setQuote(null);
+      setQuoteError(null);
+      return;
+    }
+
+    if (!serverAddress?.id) {
       setQuote(null);
       setQuoteError(null);
       return;
@@ -130,20 +187,20 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     setQuoteLoading(true);
     setQuoteError(null);
 
-    const requestedWallet =
-      paymentMethod === 'WALLET' ? user?.walletBalance ?? 0 : 0;
+    const requestedWalletPaise =
+      paymentMethod === 'WALLET'
+        ? Math.round((user?.walletBalance ?? 0) * 100)
+        : 0;
 
     api
       .quoteOrder({
-        userId: user?.id,
-        isMember: !!user?.isMember,
+        addressId: serverAddress.id,
         items: cartItems.map((ci) => ({
-          price: ci.item.mrp,
-          memberPrice: ci.item.memberPrice,
+          menuItemId: ci.item.id,
           quantity: ci.quantity,
         })),
         couponCode: appliedCouponCode || undefined,
-        useWalletBalance: requestedWallet,
+        useWalletBalancePaise: requestedWalletPaise,
       })
       .then((result) => {
         if (!cancelled) setQuote(result as ServerQuote);
@@ -163,8 +220,8 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   }, [
     cartItems,
     appliedCouponCode,
-    user?.id,
-    user?.isMember,
+    isAuthenticated,
+    serverAddress?.id,
     user?.walletBalance,
     paymentMethod,
     quoteAttempt,
@@ -178,6 +235,9 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
 
   const canPlaceOrder =
     !!activeAddress &&
+    !!serverAddress &&
+    !addressResolving &&
+    !addressError &&
     isAuthenticated &&
     !isProcessing &&
     !quoteLoading &&
@@ -220,9 +280,17 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       return;
     }
 
+    if (!serverAddress) {
+      setCheckoutError(
+        addressError || 'Wait for the delivery address to be verified.',
+      );
+      return;
+    }
+
     if (couponInvalid) {
       setCheckoutError(
-        `Coupon '${appliedCouponCode}' is not valid for this cart. Remove it and try again.`,
+        quote.couponMessage ||
+          `Coupon '${appliedCouponCode}' is not valid for this cart. Remove it and try again.`,
       );
       return;
     }
@@ -238,35 +306,22 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     let createdOrder: any = null;
 
     try {
-      // Orders may only reference an address row owned by the buyer. The
-      // storefront's local address book is provisioned idempotently here.
-      const ensuredAddress = await api.addresses.ensure({
-        type: activeAddress.type,
-        label: activeAddress.label,
-        addressLine: activeAddress.addressLine,
-        landmark: activeAddress.landmark,
-        city: activeAddress.city,
-        pincode: activeAddress.pincode,
-        lat: activeAddress.lat,
-        lng: activeAddress.lng,
-        isDefault: true,
-      });
-
-      const useWalletBalance =
+      const useWalletBalancePaise =
         effectivePaymentMethod === 'WALLET'
-          ? quote.walletBalanceRupees ?? user.walletBalance
+          ? quote.walletBalancePaise ??
+            Math.round((quote.walletBalanceRupees ?? user.walletBalance) * 100)
           : 0;
 
       createdOrder = await api.createOrder(
         {
-          addressId: ensuredAddress.id,
-          hubId: ensuredAddress.resolvedHubId || pinnedHubId || undefined,
+          addressId: serverAddress.id,
+          hubId: serverAddress.resolvedHubId || pinnedHubId || undefined,
           items: cartItems.map((ci) => ({
             menuItemId: ci.item.id,
             quantity: ci.quantity,
           })),
           couponCode: appliedCouponCode || undefined,
-          useWalletBalance,
+          useWalletBalancePaise,
           paymentMethod: effectivePaymentMethod,
         },
         idempotencyKeyRef.current,
@@ -284,42 +339,18 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
 
           await loadRazorpay();
 
-          const paymentResponse = await new Promise<any>((resolve, reject) => {
-            const options = {
-              key: rzpOrder.key,
-              amount: rzpOrder.amount,
-              currency: rzpOrder.currency || 'INR',
-              name: 'CraveOS Cloud Kitchen',
-              description: 'Multi-Brand Food Order',
-              order_id: rzpOrder.razorpayOrderId,
-              prefill: {
-                name: user.name,
-                email: user.email,
-                contact: user.phone,
-              },
-              theme: { color: '#E11D48' },
-              handler: (response: any) => resolve(response),
-              modal: {
-                ondismiss: () =>
-                  reject(
-                    paymentError(
-                      'Payment was cancelled. Your order has not been placed.',
-                      'DISMISSED',
-                    ),
-                  ),
-              },
-            };
-
-            const rzp = new (window as any).Razorpay(options);
-            rzp.on('payment.failed', (response: any) =>
-              reject(
-                paymentError(
-                  response?.error?.description || 'Payment failed. Please try again.',
-                  'FAILED',
-                ),
-              ),
-            );
-            rzp.open();
+          const paymentResponse = await openRazorpay({
+            key: rzpOrder.key,
+            amount: rzpOrder.amount,
+            currency: rzpOrder.currency || 'INR',
+            orderId: rzpOrder.razorpayOrderId,
+            name: 'CraveOS Cloud Kitchen',
+            description: 'Multi-Brand Food Order',
+            prefill: {
+              name: user.name,
+              email: user.email,
+              contact: user.phone,
+            },
           });
 
           try {
@@ -377,6 +408,8 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     if (isProcessing) return 'Confirming Order...';
     if (!activeAddress) return 'Add delivery address';
     if (!isAuthenticated) return 'Sign in to place order';
+    if (addressResolving) return 'Verifying address…';
+    if (addressError) return 'Address not serviceable';
     if (quoteLoading) return 'Calculating totals…';
     if (!quote) return 'Total unavailable';
     if (quote.finalPayable <= 0) return 'Place Order';
@@ -419,11 +452,6 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                   {activeAddress.label}
                 </span>
                 <p className="text-gray-600 dark:text-slate-300">{activeAddress.addressLine}</p>
-                {activeAddress.resolvedHubId && (
-                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                    Served by {activeAddress.resolvedHubId}
-                  </p>
-                )}
               </div>
             ) : (
               <div className="p-4 rounded-2xl border border-dashed border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-300 space-y-2">
@@ -443,9 +471,35 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               </div>
             )}
 
+            {activeAddress && addressResolving && (
+              <p className="text-[11px] font-bold text-gray-500 dark:text-slate-400">
+                Checking delivery availability…
+              </p>
+            )}
+
+            {activeAddress && addressError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs font-bold text-rose-700 dark:text-rose-300 space-y-2">
+                <p>{addressError}</p>
+                {onOpenAddressModal && (
+                  <button
+                    onClick={onOpenAddressModal}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 text-white text-[11px] font-extrabold"
+                  >
+                    Choose another address
+                  </button>
+                )}
+              </div>
+            )}
+
+            {activeAddress && serverAddress?.resolvedHubId && (
+              <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                Served by {serverAddress.resolvedHubId}
+              </p>
+            )}
+
             {!isAuthenticated && (
               <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">
-                Sign in at payment to save this address and place the order.
+                Sign in to verify this address and see the server total.
               </p>
             )}
           </div>
@@ -495,25 +549,31 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               </label>
 
               {appliedCouponCode ? (
-                <div
-                  className={`flex items-center justify-between p-3 rounded-xl border text-xs font-bold ${
-                    couponInvalid
-                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300'
-                      : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Tag className="w-4 h-4" />
-                    {appliedCouponCode}
-                    {quoteLoading && <span className="font-normal">checking…</span>}
-                    {!quoteLoading && couponInvalid && <span>is not valid for this cart</span>}
-                    {!quoteLoading && couponApplied && (
-                      <span>-₹{quote?.couponDiscount.toFixed(0)}</span>
-                    )}
-                  </span>
-                  <button onClick={removeCoupon} className="text-gray-400 hover:text-rose-600">
-                    <X className="w-4 h-4" />
-                  </button>
+                <div className="space-y-1.5">
+                  <div
+                    className={`flex items-center justify-between p-3 rounded-xl border text-xs font-bold ${
+                      couponInvalid
+                        ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300'
+                        : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Tag className="w-4 h-4" />
+                      {appliedCouponCode}
+                      {quoteLoading && <span className="font-normal">checking…</span>}
+                      {!quoteLoading && couponApplied && (
+                        <span>-₹{quote?.couponDiscount.toFixed(0)}</span>
+                      )}
+                    </span>
+                    <button onClick={removeCoupon} className="text-gray-400 hover:text-rose-600">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {!quoteLoading && couponInvalid && quote?.couponMessage && (
+                    <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400">
+                      {quote.couponMessage}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="flex gap-2">

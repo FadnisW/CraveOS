@@ -123,8 +123,9 @@ export class AdminService {
           select: {
             status: true,
             planId: true,
-            trialEndsAt: true,
-            renewsAt: true,
+            startedAt: true,
+            endsAt: true,
+            plan: { select: { name: true, slug: true } },
           },
         },
       },
@@ -498,7 +499,7 @@ export class AdminService {
       data: {
         name: 'Deleted User',
         email: `anonymized_${Date.now()}@eatclub.invalid`,
-        phone: `+910000000000_${Date.now()}`,
+        phone: null,
         walletBalance: 0,
       },
     });
@@ -973,32 +974,45 @@ export class AdminService {
   /**
    * Marketing: promotion approval queue.
    *
-   * Brand ops create PricingRule rows with config.status = PENDING_ADMIN_APPROVAL.
-   * Marketing/super admin review them here; only APPROVED rules are treated as
-   * live by the pricing engine.
+   * Brand ops create Promotion rows with status PENDING_APPROVAL. Marketing
+   * reviews them here; only APPROVED, in-window promotions are live.
    */
   async getPromotions() {
-    const rules = await this.prisma.pricingRule.findMany({
-      orderBy: { startsAt: 'desc' },
+    const promotions = await this.prisma.promotion.findMany({
+      orderBy: { createdAt: 'desc' },
       take: 200,
+      include: {
+        brand: { select: { id: true, name: true } },
+        hub: { select: { id: true, name: true } },
+      },
     });
 
-    const brandIds = [...new Set(rules.map((r) => r.brandId).filter(Boolean))] as string[];
-    const brands = await this.prisma.brand.findMany({
-      where: { id: { in: brandIds } },
-      select: { id: true, name: true },
-    });
-    const brandNameById = new Map(brands.map((b) => [b.id, b.name]));
-
-    return rules.map((rule) => {
-      const config = (rule.config as any) || {};
-      return {
-        ...rule,
-        brandName: rule.brandId ? brandNameById.get(rule.brandId) || rule.brandId : 'Platform',
-        status: config.status || 'APPROVED',
-        proposedAt: config.proposedAt || null,
-      };
-    });
+    return promotions.map((promotion) => ({
+      id: promotion.id,
+      code: promotion.code,
+      name: promotion.name,
+      description: promotion.description,
+      type: promotion.type,
+      value: promotion.value,
+      minOrderPaise: promotion.minOrderPaise,
+      maxDiscountPaise: promotion.maxDiscountPaise,
+      brandId: promotion.brandId,
+      brandName: promotion.brand?.name || 'Platform',
+      hubId: promotion.hubId,
+      hubName: promotion.hub?.name || null,
+      startsAt: promotion.startsAt,
+      endsAt: promotion.endsAt,
+      status: promotion.status,
+      totalUsageLimit: promotion.totalUsageLimit,
+      perUserLimit: promotion.perUserLimit,
+      firstOrderOnly: promotion.firstOrderOnly,
+      createdById: promotion.createdById,
+      reviewedById: promotion.reviewedById,
+      reviewedAt: promotion.reviewedAt,
+      createdAt: promotion.createdAt,
+      updatedAt: promotion.updatedAt,
+      proposedAt: promotion.createdAt,
+    }));
   }
 
   async setPromotionStatus(
@@ -1010,19 +1024,22 @@ export class AdminService {
       throw new BadRequestException('status must be APPROVED or REJECTED');
     }
 
-    const rule = await this.prisma.pricingRule.findUnique({ where: { id } });
-    if (!rule) throw new NotFoundException(`Promotion ${id} not found`);
+    const promotion = await this.prisma.promotion.findUnique({ where: { id } });
+    if (!promotion) throw new NotFoundException(`Promotion ${id} not found`);
 
-    const config = {
-      ...((rule.config as any) || {}),
-      status,
-      reviewedAt: new Date().toISOString(),
-      reviewedBy: actorId || 'SYSTEM',
-    };
+    if (status === 'APPROVED' && promotion.endsAt <= new Date()) {
+      throw new BadRequestException(
+        'This promotion has already ended and cannot be approved.',
+      );
+    }
 
-    const updated = await this.prisma.pricingRule.update({
+    const updated = await this.prisma.promotion.update({
       where: { id },
-      data: { config },
+      data: {
+        status,
+        reviewedById: actorId || 'SYSTEM',
+        reviewedAt: new Date(),
+      },
     });
 
     await this.prisma.auditLog.create({
@@ -1030,11 +1047,162 @@ export class AdminService {
         action: `PROMOTION_${status}`,
         actorId: actorId || 'SYSTEM',
         recordId: id,
-        diff: { brandId: rule.brandId, type: rule.type, status },
+        diff: {
+          code: promotion.code,
+          brandId: promotion.brandId,
+          type: promotion.type,
+          status,
+        },
       },
     });
 
     return updated;
+  }
+
+  /**
+   * Marketing: create a promotion directly. Brand ops proposals go through
+   * `proposePromotion` instead and start as PENDING_APPROVAL.
+   */
+  async createPromotion(data: any, actorId?: string) {
+    const code = String(data?.code || '').trim().toUpperCase();
+    const name = String(data?.name || '').trim();
+    const type = String(data?.type || '').trim().toUpperCase();
+
+    if (!/^[A-Z0-9][A-Z0-9_-]{2,31}$/.test(code)) {
+      throw new BadRequestException(
+        'code must be 3-32 characters: letters, numbers, underscore or hyphen',
+      );
+    }
+    if (!name) {
+      throw new BadRequestException('name is required');
+    }
+    if (!['PERCENT', 'FLAT', 'FREE_DELIVERY'].includes(type)) {
+      throw new BadRequestException(
+        'type must be PERCENT, FLAT or FREE_DELIVERY',
+      );
+    }
+
+    const value = Number(data?.value);
+    if (type === 'PERCENT' && (!Number.isInteger(value) || value < 1 || value > 100)) {
+      throw new BadRequestException('PERCENT value must be a whole number from 1 to 100');
+    }
+    if (type === 'FLAT' && (!Number.isInteger(value) || value <= 0)) {
+      throw new BadRequestException('FLAT value must be a positive whole number of paise');
+    }
+    if (type === 'FREE_DELIVERY' && value !== 0) {
+      throw new BadRequestException('FREE_DELIVERY value must be 0');
+    }
+
+    const startsAt = new Date(data?.startsAt);
+    const endsAt = new Date(data?.endsAt);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      throw new BadRequestException('startsAt and endsAt must be valid dates');
+    }
+    if (endsAt <= startsAt) {
+      throw new BadRequestException('endsAt must be after startsAt');
+    }
+
+    const minOrderPaise = Number(data?.minOrderPaise ?? 0);
+    if (!Number.isInteger(minOrderPaise) || minOrderPaise < 0) {
+      throw new BadRequestException('minOrderPaise must be a non-negative whole number');
+    }
+
+    const maxDiscountPaise =
+      data?.maxDiscountPaise === null || data?.maxDiscountPaise === undefined
+        ? null
+        : Number(data.maxDiscountPaise);
+    if (
+      maxDiscountPaise !== null &&
+      (!Number.isInteger(maxDiscountPaise) || maxDiscountPaise <= 0)
+    ) {
+      throw new BadRequestException(
+        'maxDiscountPaise must be a positive whole number of paise',
+      );
+    }
+
+    const perUserLimit = Number(data?.perUserLimit ?? 1);
+    if (!Number.isInteger(perUserLimit) || perUserLimit < 1) {
+      throw new BadRequestException('perUserLimit must be at least 1');
+    }
+
+    const totalUsageLimit =
+      data?.totalUsageLimit === null || data?.totalUsageLimit === undefined
+        ? null
+        : Number(data.totalUsageLimit);
+    if (
+      totalUsageLimit !== null &&
+      (!Number.isInteger(totalUsageLimit) || totalUsageLimit < 1)
+    ) {
+      throw new BadRequestException('totalUsageLimit must be at least 1');
+    }
+
+    const brandId = data?.brandId ? String(data.brandId) : null;
+    if (brandId) {
+      const brand = await this.prisma.brand.findUnique({ where: { id: brandId } });
+      if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
+    }
+
+    const hubId = data?.hubId ? String(data.hubId) : null;
+    if (hubId) {
+      const hub = await this.prisma.hub.findUnique({ where: { id: hubId } });
+      if (!hub) throw new NotFoundException(`Hub ${hubId} not found`);
+    }
+
+    const requestedStatus = String(data?.status || 'APPROVED').toUpperCase();
+    if (!['DRAFT', 'APPROVED', 'PENDING_APPROVAL'].includes(requestedStatus)) {
+      throw new BadRequestException(
+        'status must be DRAFT, APPROVED or PENDING_APPROVAL',
+      );
+    }
+
+    try {
+      const created = await this.prisma.promotion.create({
+        data: {
+          code,
+          name,
+          description: data?.description ? String(data.description) : null,
+          type: type as any,
+          value,
+          minOrderPaise,
+          maxDiscountPaise,
+          brandId,
+          hubId,
+          startsAt,
+          endsAt,
+          status: requestedStatus as any,
+          totalUsageLimit,
+          perUserLimit,
+          firstOrderOnly: !!data?.firstOrderOnly,
+          createdById: actorId || null,
+          reviewedById:
+            requestedStatus === 'APPROVED' ? actorId || 'SYSTEM' : null,
+          reviewedAt: requestedStatus === 'APPROVED' ? new Date() : null,
+        },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          action: 'PROMOTION_CREATED',
+          actorId: actorId || 'SYSTEM',
+          recordId: created.id,
+          diff: {
+            code,
+            type,
+            value,
+            status: requestedStatus,
+            brandId,
+            hubId,
+          },
+        },
+      });
+
+      return created;
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException(`Promotion code '${code}' already exists`);
+      }
+      throw error;
+    }
   }
 
   /**

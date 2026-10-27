@@ -41,6 +41,34 @@ enum MembershipStatus {
   CANCELLED
 }
 
+enum MembershipPurchaseStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum PromotionType {
+  PERCENT
+  FLAT
+  FREE_DELIVERY
+}
+
+enum PromotionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  ARCHIVED
+}
+
+enum ReferralStatus {
+  PENDING
+  QUALIFIED
+  REWARDED
+  CANCELLED
+}
+
 enum TripStatus {
   UNASSIGNED
   ASSIGNED
@@ -83,90 +111,100 @@ enum AddressType {
 }
 
 model User {
-  id                String              @id @default(cuid())
-  phone             String              @unique
-  email             String?             @unique
-  name              String?
-  role              String              @default("CUSTOMER") // CUSTOMER / HUB_STAFF / HUB_MANAGER / BRAND_OPS / RIDER / ADMIN
-  adminSubRole      AdminSubRole?
-  scopedHubId       String?
-  scopedBrandId     String?
-  walletBalance     Int                 @default(0) // paise (e.g. 25000 = ₹250.00)
-  isBlocked         Boolean             @default(false) // set by admin block; never overloads `role`
-  membership        Membership?
-  addresses         Address[]
-  orders            Order[]
-  walletTxns        WalletTransaction[]
-  referralCode      String              @unique
-  referredById      String?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  id                   String                @id @default(cuid())
+  // Customers sign up with email only. Phone is collected when it is actually
+  // needed (delivery contact) — never generated as a placeholder.
+  phone                String?               @unique
+  email                String?               @unique
+  name                 String?
+  role                 String                @default("CUSTOMER") // CUSTOMER / HUB_STAFF / HUB_MANAGER / BRAND_OPS / RIDER / ADMIN
+  adminSubRole         AdminSubRole?
+  scopedHubId          String?
+  scopedBrandId        String?
+  walletBalance        Int                   @default(0) // paise (e.g. 25000 = ₹250.00)
+  isBlocked            Boolean               @default(false) // set by admin block; never overloads `role`
+  membership           Membership?
+  membershipPurchases  MembershipPurchase[]
+  promotionRedemptions PromotionRedemption[]
+  addresses            Address[]
+  orders               Order[]
+  walletTxns           WalletTransaction[]
+  referralCode         String                @unique
+  referredById         String?
+  referredBy           User?                 @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referredUsers        User[]                @relation("UserReferrals")
+  referralsMade        Referral[]            @relation("ReferralsMade")
+  referralReceived     Referral?             @relation("ReferralReceived")
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 
   @@map("users")
 }
 
 model Address {
-  id              String      @id @default(cuid())
-  userId          String
-  type            AddressType @default(HOME)
-  label           String
-  addressLine     String
-  landmark        String?
-  city            String
-  pincode         String
-  lat             Float
-  lng             Float
-  resolvedHubId   String
-  isDefault       Boolean     @default(false)
-  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders          Order[]
-  createdAt       DateTime    @default(now())
+  id            String      @id @default(cuid())
+  userId        String
+  type          AddressType @default(HOME)
+  label         String
+  addressLine   String
+  landmark      String?
+  city          String
+  pincode       String
+  lat           Float
+  lng           Float
+  resolvedHubId String
+  isDefault     Boolean     @default(false)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders        Order[]
+  createdAt     DateTime    @default(now())
 
   @@map("addresses")
 }
 
 model Brand {
-  id             String         @id @default(cuid())
-  name           String         // "BOX8", "MOJO Pizza", "ZAZA" ...
-  slug           String         @unique
-  tagline        String
-  cuisine        String[]
-  logoUrl        String
-  heroImageUrl   String
-  themeColor     String         // Hex color accent
-  isActive       Boolean        @default(true)
-  isOwned        Boolean        @default(true) // SDD §7.1: First-party vs 3rd party/franchise
-  commissionPct  Float?                        // Optional commission percentage for 3rd party brands
-  minOrderValue  Int            @default(149) // paise
-  brandKitchens  BrandKitchen[]
+  id            String         @id @default(cuid())
+  name          String // "BOX8", "MOJO Pizza", "ZAZA" ...
+  slug          String         @unique
+  tagline       String
+  cuisine       String[]
+  logoUrl       String
+  heroImageUrl  String
+  themeColor    String // Hex color accent
+  isActive      Boolean        @default(true)
+  isOwned       Boolean        @default(true) // SDD §7.1: First-party vs 3rd party/franchise
+  commissionPct Float? // Optional commission percentage for 3rd party brands
+  minOrderValue Int            @default(149) // paise
+  brandKitchens BrandKitchen[]
+  promotions    Promotion[]
 
   @@map("brands")
 }
 
 model Hub {
   id                  String         @id @default(cuid())
-  name                String         // "HSR Layout Hub #01"
+  name                String // "HSR Layout Hub #01"
   city                String
   lat                 Float
   lng                 Float
-  servicePolygon      Json           // GeoJSON polygon
-  operatingHoursStart String?        // "HH:mm"
-  operatingHoursEnd   String?        // "HH:mm"
+  servicePolygon      Json // GeoJSON polygon
+  operatingHoursStart String? // "HH:mm"
+  operatingHoursEnd   String? // "HH:mm"
   brandKitchens       BrandKitchen[]
   orders              Order[]
   riders              Rider[]
+  promotions          Promotion[]
 
   @@map("hubs")
 }
 
 model BrandKitchen {
-  id          String     @id @default(cuid())
-  brandId     String
-  hubId       String
-  isOpen      Boolean    @default(true)
-  brand       Brand      @relation(fields: [brandId], references: [id], onDelete: Cascade)
-  hub         Hub        @relation(fields: [hubId], references: [id], onDelete: Cascade)
-  menuItems   MenuItem[]
+  id        String     @id @default(cuid())
+  brandId   String
+  hubId     String
+  isOpen    Boolean    @default(true)
+  brand     Brand      @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  hub       Hub        @relation(fields: [hubId], references: [id], onDelete: Cascade)
+  menuItems MenuItem[]
 
   @@unique([brandId, hubId])
   @@map("brand_kitchens")
@@ -181,21 +219,21 @@ model MenuItem {
   menuItemGroupId    String?
   name               String
   description        String
-  mrpInPaise         Int          // Max Retail Price
-  memberPriceInPaise Int          // Discounted Eatclub Member Price
+  mrpInPaise         Int // Max Retail Price
+  memberPriceInPaise Int // Discounted Eatclub Member Price
   imageUrl           String
   isVeg              Boolean      @default(true)
   isBestseller       Boolean      @default(false)
   isAvailable        Boolean      @default(true) // Hub-level 86'd out-of-stock flag
   category           String
   rating             Float        @default(4.5)
-  dietType           String?      // "VEG" | "NON_VEG" | "EGG" | "JAIN"
-  spiceLevel         Int?         // 0-3
-  gstPct             Int?         // e.g. 5 for 5% GST
-  variants           Json?        // [{ name: "Small", priceInPaise: 19900 }, ...]
-  addOns             Json?        // [{ name: "Extra cheese", priceInPaise: 5000 }, ...]
-  scheduledFrom      String?      // "HH:mm"
-  scheduledTo        String?      // "HH:mm"
+  dietType           String? // "VEG" | "NON_VEG" | "EGG" | "JAIN"
+  spiceLevel         Int? // 0-3
+  gstPct             Int? // e.g. 5 for 5% GST
+  variants           Json? // [{ name: "Small", priceInPaise: 19900 }, ...]
+  addOns             Json? // [{ name: "Extra cheese", priceInPaise: 5000 }, ...]
+  scheduledFrom      String? // "HH:mm"
+  scheduledTo        String? // "HH:mm"
   brandKitchen       BrandKitchen @relation(fields: [brandKitchenId], references: [id], onDelete: Cascade)
 
   @@index([brandKitchenId, isAvailable])
@@ -204,53 +242,54 @@ model MenuItem {
 }
 
 model Cart {
-  id          String     @id @default(cuid())
-  userId      String     @unique
-  hubId       String
-  items       CartItem[]
-  updatedAt   DateTime   @updatedAt
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  hubId     String
+  items     CartItem[]
+  updatedAt DateTime   @updatedAt
 
   @@map("carts")
 }
 
 model CartItem {
-  id             String   @id @default(cuid())
-  cartId         String
-  menuItemId     String
-  brandId        String   // Denormalized for fast multi-brand grouping
-  quantity       Int      @default(1)
-  optionsSnapshot Json?   // Customization options array
-  unitPricePaise Int
-  cart           Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  id              String @id @default(cuid())
+  cartId          String
+  menuItemId      String
+  brandId         String // Denormalized for fast multi-brand grouping
+  quantity        Int    @default(1)
+  optionsSnapshot Json? // Customization options array
+  unitPricePaise  Int
+  cart            Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
 
   @@map("cart_items")
 }
 
 model Order {
-  id                 String         @id @default(cuid())
-  userId             String
-  addressId          String
-  hubId              String
-  idempotencyKey     String?        @unique // client retry key; prevents duplicate orders/charges
-  status             OrderStatus    @default(PENDING_CONFIRMATION)
-  paymentMethod      String         @default("UPI") // UPI / CARD / WALLET / COD
-  mrpTotalPaise      Int
-  memberSavingsPaise Int
-  deliveryFeePaise   Int            @default(0)
-  packagingFeePaise  Int            @default(0)
-  taxPaise           Int
-  walletAppliedPaise Int            @default(0) // wallet money consumed by this order (paise)
-  finalPaidPaise     Int            // amount charged to the payment gateway (paise)
-  estimatedDeliveryMins Int         @default(30) // prep + hub-to-address travel estimate
-  discountBreakdown  Json           // { membership, coupon, wallet }
-  brandOrders        BrandOrder[]
-  payment            Payment?
-  deliveryTrip       DeliveryTrip?
-  user               User           @relation(fields: [userId], references: [id])
-  address            Address        @relation(fields: [addressId], references: [id])
-  hub                Hub            @relation(fields: [hubId], references: [id])
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id                    String                @id @default(cuid())
+  userId                String
+  addressId             String
+  hubId                 String
+  idempotencyKey        String?               @unique // client retry key; prevents duplicate orders/charges
+  status                OrderStatus           @default(PENDING_CONFIRMATION)
+  paymentMethod         String                @default("UPI") // UPI / CARD / WALLET / COD
+  mrpTotalPaise         Int
+  memberSavingsPaise    Int
+  deliveryFeePaise      Int                   @default(0)
+  packagingFeePaise     Int                   @default(0)
+  taxPaise              Int
+  walletAppliedPaise    Int                   @default(0) // wallet money consumed by this order (paise)
+  finalPaidPaise        Int // amount charged to the payment gateway (paise)
+  estimatedDeliveryMins Int                   @default(30) // prep + hub-to-address travel estimate
+  discountBreakdown     Json // { membership, coupon, wallet }
+  brandOrders           BrandOrder[]
+  payment               Payment?
+  deliveryTrip          DeliveryTrip?
+  promotionRedemptions  PromotionRedemption[]
+  user                  User                  @relation(fields: [userId], references: [id])
+  address               Address               @relation(fields: [addressId], references: [id])
+  hub                   Hub                   @relation(fields: [hubId], references: [id])
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
   @@index([userId, createdAt])
   @@index([status])
@@ -272,30 +311,30 @@ model BrandOrder {
 }
 
 model OrderItem {
-  id             String     @id @default(cuid())
-  brandOrderId   String
-  menuItemId     String
-  nameSnapshot   String
-  mrpSnapshot    Int        @default(0) // MRP per unit at purchase time (paise)
-  priceSnapshot  Int        // effective price paid per unit (paise)
-  quantity       Int
-  brandOrder     BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
+  id            String     @id @default(cuid())
+  brandOrderId  String
+  menuItemId    String
+  nameSnapshot  String
+  mrpSnapshot   Int        @default(0) // MRP per unit at purchase time (paise)
+  priceSnapshot Int // effective price paid per unit (paise)
+  quantity      Int
+  brandOrder    BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
 
   @@map("order_items")
 }
 
 model Payment {
-  id             String        @id @default(cuid())
-  orderId        String        @unique
-  gateway        String        @default("razorpay")
-  gatewayOrderId String?
-  gatewayPaymentId String?
-  status         PaymentStatus @default(INITIATED)
-  amountInPaise  Int
-  refundedAmountPaise Int       @default(0) // gateway refunds actually issued
-  refundId       String?
-  refundedAt     DateTime?
-  order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id                  String        @id @default(cuid())
+  orderId             String        @unique
+  gateway             String        @default("razorpay")
+  gatewayOrderId      String?
+  gatewayPaymentId    String?
+  status              PaymentStatus @default(INITIATED)
+  amountInPaise       Int
+  refundedAmountPaise Int           @default(0) // gateway refunds actually issued
+  refundId            String?
+  refundedAt          DateTime?
+  order               Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([gatewayOrderId])
   @@map("payments")
@@ -306,56 +345,149 @@ model Membership {
   userId      String           @unique
   planId      String
   status      MembershipStatus @default(TRIAL)
-  trialEndsAt DateTime?
-  renewsAt    DateTime?
+  startedAt   DateTime         @default(now())
+  endsAt      DateTime
+  autoRenew   Boolean          @default(false) // no recurring billing is implemented; always false
+  cancelledAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
   user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan        MembershipPlan   @relation(fields: [planId], references: [id])
 
+  @@index([status, endsAt])
   @@map("memberships")
 }
 
 model MembershipPlan {
-  id              String @id @default(cuid())
-  name            String // "Quarterly", "Annual"
+  id              String               @id @default(cuid())
+  slug            String               @unique
+  name            String
+  description     String?
   durationDays    Int
   priceInPaise    Int
-  flatDiscountPct Int    @default(30)
+  flatDiscountPct Int                  @default(30) // displayed benefit; member prices come from MenuItem
+  isTrial         Boolean              @default(false)
+  isActive        Boolean              @default(true)
+  sortOrder       Int                  @default(0)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @default(now()) @updatedAt
+  memberships     Membership[]
+  purchases       MembershipPurchase[]
 
   @@map("membership_plans")
 }
 
-model PricingRule {
-  id        String   @id @default(cuid())
-  type      String   // "HAPPY_HOUR" | "MEAL_OF_DAY" | "BOGO"
-  brandId   String?
-  startsAt  DateTime
-  endsAt    DateTime
-  config    Json
+model MembershipPurchase {
+  id               String                   @id @default(cuid())
+  userId           String
+  planId           String
+  idempotencyKey   String?                  @unique
+  status           MembershipPurchaseStatus @default(INITIATED)
+  amountInPaise    Int
+  paymentMethod    String // RAZORPAY | WALLET
+  gatewayOrderId   String?                  @unique
+  gatewayPaymentId String?
+  startsAt         DateTime?
+  endsAt           DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @default(now()) @updatedAt
+  user             User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan             MembershipPlan           @relation(fields: [planId], references: [id])
 
-  @@map("pricing_rules")
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("membership_purchases")
+}
+
+model Promotion {
+  id               String                @id @default(cuid())
+  code             String                @unique // stored uppercase; the only customer-entered identifier
+  name             String
+  description      String?
+  type             PromotionType
+  value            Int // PERCENT: 1-100; FLAT: paise; FREE_DELIVERY: 0
+  minOrderPaise    Int                   @default(0)
+  maxDiscountPaise Int?
+  brandId          String?
+  hubId            String?
+  startsAt         DateTime
+  endsAt           DateTime
+  status           PromotionStatus       @default(DRAFT)
+  totalUsageLimit  Int?
+  perUserLimit     Int                   @default(1)
+  firstOrderOnly   Boolean               @default(false)
+  createdById      String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @default(now()) @updatedAt
+  brand            Brand?                @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  hub              Hub?                  @relation(fields: [hubId], references: [id], onDelete: SetNull)
+  redemptions      PromotionRedemption[]
+
+  @@index([status, startsAt, endsAt])
+  @@index([brandId, status])
+  @@index([hubId, status])
+  @@map("promotions")
+}
+
+model PromotionRedemption {
+  id            String    @id @default(cuid())
+  promotionId   String
+  userId        String
+  orderId       String
+  discountPaise Int
+  createdAt     DateTime  @default(now())
+  promotion     Promotion @relation(fields: [promotionId], references: [id], onDelete: Restrict)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order         Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, orderId])
+  @@index([userId, promotionId])
+  @@index([promotionId, createdAt])
+  @@map("promotion_redemptions")
+}
+
+model Referral {
+  id                 String         @id @default(cuid())
+  referrerId         String
+  refereeId          String         @unique
+  code               String
+  status             ReferralStatus @default(PENDING)
+  rewardPaise        Int            @default(0)
+  refereeRewardPaise Int            @default(0)
+  qualifiedAt        DateTime?
+  rewardedAt         DateTime?
+  createdAt          DateTime       @default(now())
+  referrer           User           @relation("ReferralsMade", fields: [referrerId], references: [id], onDelete: Cascade)
+  referee            User           @relation("ReferralReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId, status])
+  @@map("referrals")
 }
 
 model Rider {
-  id               String         @id @default(cuid())
-  phone            String         @unique
-  name             String
-  status           RiderStatus    @default(PENDING_APPROVAL)
-  vehicleType      String         // "BIKE" | "SCOOTER" | "BICYCLE"
-  vehicleRegNo     String?
-  licenceDocUrl    String?
-  vehicleRcDocUrl  String?
-  bankAccountRef   String?
-  upiId            String?
-  isOnline         Boolean        @default(false)
-  liveLat          Float?
-  liveLng          Float?
-  currentHubId     String?
-  capacityMax      Int            @default(1)
-  rating           Float?         @default(5.0)
-  createdAt        DateTime       @default(now())
-  approvedAt       DateTime?
-  trips            DeliveryTrip[]
-  earnings         RiderEarning[]
-  currentHub       Hub?           @relation(fields: [currentHubId], references: [id])
+  id              String         @id @default(cuid())
+  phone           String         @unique
+  name            String
+  status          RiderStatus    @default(PENDING_APPROVAL)
+  vehicleType     String // "BIKE" | "SCOOTER" | "BICYCLE"
+  vehicleRegNo    String?
+  licenceDocUrl   String?
+  vehicleRcDocUrl String?
+  bankAccountRef  String?
+  upiId           String?
+  isOnline        Boolean        @default(false)
+  liveLat         Float?
+  liveLng         Float?
+  currentHubId    String?
+  capacityMax     Int            @default(1)
+  rating          Float?         @default(5.0)
+  createdAt       DateTime       @default(now())
+  approvedAt      DateTime?
+  trips           DeliveryTrip[]
+  earnings        RiderEarning[]
+  currentHub      Hub?           @relation(fields: [currentHubId], references: [id])
 
   @@index([status, isOnline])
   @@map("riders")
@@ -365,8 +497,8 @@ model RiderEarning {
   id            String   @id @default(cuid())
   riderId       String
   tripId        String?
-  type          String   // BASE_FEE / DISTANCE_FEE / SURGE / TIP / INCENTIVE / PENALTY / PAYOUT
-  amountInPaise Int      // signed
+  type          String // BASE_FEE / DISTANCE_FEE / SURGE / TIP / INCENTIVE / PENALTY / PAYOUT
+  amountInPaise Int // signed
   createdAt     DateTime @default(now())
   rider         Rider    @relation(fields: [riderId], references: [id], onDelete: Cascade)
 
@@ -376,10 +508,10 @@ model RiderEarning {
 
 model Ticket {
   id             String       @id @default(cuid())
-  raisedByType   String       // CUSTOMER / HUB / BRAND_OPS / RIDER
+  raisedByType   String // CUSTOMER / HUB / BRAND_OPS / RIDER
   raisedById     String
   orderId        String?
-  category       String       // MISSING_ITEM / WRONG_ITEM / LATE_DELIVERY / PAYMENT_ISSUE / RIDER_SAFETY / OTHER
+  category       String // MISSING_ITEM / WRONG_ITEM / LATE_DELIVERY / PAYMENT_ISSUE / RIDER_SAFETY / OTHER
   status         TicketStatus @default(OPEN)
   assignedToId   String?
   priority       String       @default("NORMAL")
@@ -408,7 +540,7 @@ model DeliveryTrip {
   rider         Rider?     @relation(fields: [riderId], references: [id])
   order         Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt @default(now())
+  updatedAt     DateTime   @default(now()) @updatedAt
 
   @@map("delivery_trips")
 }
@@ -416,9 +548,13 @@ model DeliveryTrip {
 model WalletTransaction {
   id            String   @id @default(cuid())
   userId        String
-  amountInPaise Int      // signed (+ credit, - debit)
-  reason        String   // "WELCOME_BONUS" | "ORDER_SPEND" | "ORDER_REFUND" | "PARTIAL_ORDER_REFUND" | free-text admin reason
+  amountInPaise Int // signed (+ credit, - debit)
+  reason        String // ORDER_SPEND | ORDER_REFUND | MEMBERSHIP_PURCHASE | REFERRAL_REWARD | ADMIN_ADJUSTMENT
   orderId       String?
+  // Non-order money movements point at the entity that caused them, so a
+  // membership purchase or referral reward is traceable from the ledger.
+  referenceType String?
+  referenceId   String?
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt     DateTime @default(now())
 
@@ -428,14 +564,13 @@ model WalletTransaction {
 
 model AuditLog {
   id        String   @id @default(cuid())
-  action    String   // "ORDER_CREATED" | "PAYMENT_CAPTURED" | "WALLET_REFUND"
-  actorId   String   // User or Staff ID
-  recordId  String   // Target entity ID
-  diff      Json?    // Financial or status delta
+  action    String // "ORDER_CREATED" | "PAYMENT_CAPTURED" | "WALLET_REFUND"
+  actorId   String // User or Staff ID
+  recordId  String // Target entity ID
+  diff      Json? // Financial or status delta
   ipAddress String?
   createdAt DateTime @default(now())
 
   @@index([action, createdAt])
   @@map("audit_logs")
 }
-

@@ -234,6 +234,10 @@ export class PaymentsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      // The webhook and the client verification can arrive at the same time.
+      // Lock the payment row so only one settlement writes wallet/audit rows.
+      await tx.$executeRaw`SELECT "id" FROM "payments" WHERE "id" = ${payment.id} FOR UPDATE`;
+
       const fresh = await tx.payment.findUnique({
         where: { id: payment.id },
         include: { order: true },

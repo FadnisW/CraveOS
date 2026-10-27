@@ -18,6 +18,8 @@ import { AdminModule } from './modules/admin/admin.module';
 import { HubOpsModule } from './modules/hub-ops/hub-ops.module';
 import { BrandOpsModule } from './modules/brand-ops/brand-ops.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
+import { MembershipModule } from './modules/membership/membership.module';
+import { ReferralsModule } from './modules/referrals/referrals.module';
 import { RolesGuard } from './common/guards/roles.guard';
 import { JwtConfigModule } from './common/auth/jwt-config.module';
 import { validateEnv } from './common/config/env.validation';
@@ -59,6 +61,8 @@ import { HealthModule } from './modules/health/health.module';
     HubOpsModule,
     BrandOpsModule,
     AddressesModule,
+    MembershipModule,
+    ReferralsModule,
     HealthModule,
   ],
   providers: [

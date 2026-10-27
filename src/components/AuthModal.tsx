@@ -29,6 +29,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [email, setEmail] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
   const [otp, setOtp] = useState<string>('');
+  const [referralCode, setReferralCode] = useState<string>('');
+  const [referralNotice, setReferralNotice] = useState<string | null>(null);
   const [demoCode, setDemoCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -40,6 +42,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     setOtp('');
     setDemoCode(null);
     setErrorMsg(null);
+    setReferralNotice(null);
   };
 
   const switchMode = (next: AuthMode) => {
@@ -92,10 +95,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         return;
       }
 
-      const res = await api.verifyOtp(email.trim(), otp.trim());
+      const res = await api.verifyOtp(
+        email.trim(),
+        otp.trim(),
+        referralCode.trim() || undefined,
+      );
       if (res.accessToken) {
         localStorage.setItem('eatclub_token', res.accessToken);
         onSuccess(res.user, res.accessToken);
+
+        const submittedCode = referralCode.trim();
+        if (submittedCode) {
+          // The referral is applied at signup and only pays after the invited
+          // customer's first delivered order. Say which of those happened.
+          setReferralNotice(
+            res.referralApplied
+              ? `Referral code ${submittedCode.toUpperCase()} applied. ₹50 will be credited to your wallet after your first delivered order.`
+              : `Signed in. Referral code ${submittedCode.toUpperCase()} was not applied — it may be invalid, already used, or the referrer is not eligible yet.`,
+          );
+          return;
+        }
+
         onClose();
       }
     } catch (err: any) {
@@ -182,6 +202,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   <p className="text-[10px] text-gray-400">
                     Staff: use the email provisioned by a super admin.
                   </p>
+
+                  <div className="pt-2">
+                    <label className="text-xs font-bold text-gray-700 dark:text-slate-300">
+                      Referral code (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={referralCode}
+                      onChange={(e) =>
+                        setReferralCode(e.target.value.toUpperCase())
+                      }
+                      placeholder="REF-XXXXXXXXXX"
+                      className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-semibold tracking-wide focus:outline-none focus:border-rose-500"
+                    />
+                    <p className="mt-1 text-[10px] text-gray-400">
+                      Both accounts get wallet credit after the invited
+                      customer&apos;s first delivered order.
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -260,14 +299,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                 )}
               </div>
 
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-sm shadow-lg shadow-rose-500/20 transition-all flex items-center justify-center gap-2"
-              >
-                <span>{isLoading ? 'Verifying...' : 'Verify & Sign In'}</span>
-                <ShieldCheck className="w-4 h-4" />
-              </button>
+              {referralNotice && (
+                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-bold space-y-2">
+                  <p>{referralNotice}</p>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[11px] font-extrabold"
+                  >
+                    Continue
+                  </button>
+                </div>
+              )}
+
+              {!referralNotice && (
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-sm shadow-lg shadow-rose-500/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <span>{isLoading ? 'Verifying...' : 'Verify & Sign In'}</span>
+                  <ShieldCheck className="w-4 h-4" />
+                </button>
+              )}
             </form>
           )}
         </motion.div>

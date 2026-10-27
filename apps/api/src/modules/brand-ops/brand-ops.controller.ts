@@ -133,14 +133,26 @@ export class BrandOpsController {
     @Param('brandId') brandId: string,
     @Body()
     body: {
-      type: 'HAPPY_HOUR' | 'MEAL_OF_DAY' | 'BOGO' | 'COUPON';
+      code: string;
+      name: string;
+      description?: string;
+      type: 'PERCENT' | 'FLAT' | 'FREE_DELIVERY';
+      value: number;
+      minOrderPaise?: number;
+      maxDiscountPaise?: number | null;
       startsAt: string;
       endsAt: string;
-      config: any;
+      perUserLimit?: number;
+      totalUsageLimit?: number | null;
+      firstOrderOnly?: boolean;
     },
   ) {
     this.assertBrandScope(req.user as AuthenticatedActor, brandId);
-    return this.brandOpsService.proposePromotion(brandId, body);
+    return this.brandOpsService.proposePromotion(
+      brandId,
+      body,
+      req.user?.sub,
+    );
   }
 
   /**

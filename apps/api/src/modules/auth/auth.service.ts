@@ -2,16 +2,20 @@ import {
   Injectable,
   UnauthorizedException,
   ForbiddenException,
+  InternalServerErrorException,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import * as crypto from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ReferralsService } from '../referrals/referrals.service';
 import Redis from 'ioredis';
 import { redisUrl } from '../../common/config/env.validation';
 
 const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
+const TRIAL_DAYS = 30;
 
 @Injectable()
 export class AuthService {
@@ -22,6 +26,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly notificationsService: NotificationsService,
+    private readonly referralsService: ReferralsService,
   ) {
     // Connect to Redis — OTPs survive server restarts/hot-reloads.
     // No localhost fallback: REDIS_URL is required and validated at startup.
@@ -73,13 +78,13 @@ export class AuthService {
     };
   }
 
-  async verifyOtp(email: string, code: string) {
+  async verifyOtp(email: string, code: string, referralCode?: string) {
     const cleanEmail = email.trim().toLowerCase();
 
     // Dev magic bypass — requires BOTH a development environment and an explicit opt-in.
     if (this.isDevOtpBypassEnabled() && code === '123456') {
       this.logger.log(`🔓 Dev bypass used for ${cleanEmail}`);
-      return this.upsertUserAndSign(cleanEmail);
+      return this.upsertUserAndSign(cleanEmail, referralCode);
     }
 
     // Fetch OTP from Redis
@@ -99,64 +104,111 @@ export class AuthService {
     await this.redis.del(this.otpKey(cleanEmail));
     this.logger.log(`✅ OTP verified for ${cleanEmail}`);
 
-    return this.upsertUserAndSign(cleanEmail);
+    return this.upsertUserAndSign(cleanEmail, referralCode);
   }
 
-  private async upsertUserAndSign(email: string) {
-    let user = await this.prisma.user.findUnique({
+  /**
+   * Returns the signed-in account with the relations the storefront renders.
+   * Never returns password/token material — there is none on User.
+   */
+  async getMe(userId: string) {
+    if (!userId) {
+      throw new UnauthorizedException('Authentication required');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { membership: { include: { plan: true } }, addresses: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('This account no longer exists');
+    }
+    if (user.isBlocked) {
+      throw new ForbiddenException(
+        'This account has been blocked. Contact support.',
+      );
+    }
+
+    return { user };
+  }
+
+  private async upsertUserAndSign(email: string, referralCode?: string) {
+    let user: any = await this.prisma.user.findUnique({
       where: { email },
-      include: { membership: true, addresses: true },
+      include: { membership: { include: { plan: true } }, addresses: true },
     });
 
     if (user?.isBlocked) {
       throw new ForbiddenException('This account has been blocked. Contact support.');
     }
 
-    if (!user) {
-      const WELCOME_BONUS_PAISE = 10000; // ₹100
+    let referralApplied = false;
 
-      // Create the user and the bonus ledger entry together, and seed the balance
-      // in the same write. Previously the ledger got a ₹100 row while
-      // User.walletBalance stayed at 0, so Profile and Checkout disagreed.
-      user = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
+    if (!user) {
+      const trialPlan = await this.prisma.membershipPlan.findFirst({
+        where: { isTrial: true, isActive: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+
+      if (!trialPlan) {
+        // The trial plan is created by the Phase 2 migration. Failing loudly is
+        // better than creating an account with a dangling plan id.
+        throw new InternalServerErrorException(
+          'The free trial is not configured. Contact support.',
+        );
+      }
+
+      const created = await this.prisma.$transaction(async (tx) => {
+        const newUser = await tx.user.create({
           data: {
             email,
             name: email.split('@')[0],
-            phone: `+91${Math.floor(6000000000 + Math.random() * 3999999999)}`,
-            referralCode: `REF-${Math.floor(100000 + Math.random() * 900000)}`,
-            walletBalance: WELCOME_BONUS_PAISE,
+            referralCode: await this.generateReferralCode(tx),
+            // No welcome wallet cash: it was farmable. New customers get the
+            // WELCOME100 promotion, which is only redeemable on a real order.
           },
-          include: { membership: true, addresses: true },
+          include: {
+            membership: { include: { plan: true } },
+            addresses: true,
+          },
         });
 
-        await tx.walletTransaction.create({
+        await tx.membership.create({
           data: {
-            userId: created.id,
-            amountInPaise: WELCOME_BONUS_PAISE,
-            reason: 'WELCOME_BONUS',
+            userId: newUser.id,
+            planId: trialPlan.id,
+            status: 'TRIAL',
+            startedAt: new Date(),
+            endsAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
           },
         });
 
-        return created;
+        const referral = await this.referralsService.acceptReferral(
+          tx,
+          newUser.id,
+          referralCode,
+        );
+
+        const hydrated = await tx.user.findUnique({
+          where: { id: newUser.id },
+          include: {
+            membership: { include: { plan: true } },
+            addresses: true,
+          },
+        });
+
+        return { user: hydrated || newUser, referralApplied: referral.applied };
       });
 
-      // SDD §7.2: Auto-enroll new users in a 30-day Free Trial membership.
-      const trialPlan = await this.prisma.membershipPlan.findFirst({
-        where: { name: { contains: 'Trial' } },
-      });
-      const planId = trialPlan?.id || 'STANDARD_TRIAL';
+      user = created.user;
+      referralApplied = created.referralApplied;
 
-      await this.prisma.membership.create({
-        data: {
-          userId: user.id,
-          planId,
-          status: 'TRIAL',
-          trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-        },
-      });
-
-      this.logger.log(`👤 New user created: ${email} — 30-day Free Trial membership activated`);
+      this.logger.log(
+        `👤 New user created: ${email} — ${TRIAL_DAYS}-day free trial activated${
+          referralApplied ? ' with referral' : ''
+        }`,
+      );
     }
 
     const payload = {
@@ -169,6 +221,21 @@ export class AuthService {
     };
     const accessToken = this.jwtService.sign(payload);
 
-    return { accessToken, user };
+    return { accessToken, user, referralApplied };
+  }
+
+  private async generateReferralCode(tx: any): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const code = `REF-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+      const existing = await tx.user.findUnique({
+        where: { referralCode: code },
+        select: { id: true },
+      });
+      if (!existing) return code;
+    }
+
+    throw new InternalServerErrorException(
+      'Could not allocate a referral code. Please retry.',
+    );
   }
 }

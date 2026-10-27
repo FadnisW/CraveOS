@@ -104,6 +104,19 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
   });
   const [payouts, setPayouts] = useState<any[]>([]);
   const [promotions, setPromotions] = useState<any[]>([]);
+  const [promotionDraft, setPromotionDraft] = useState({
+    code: '',
+    name: '',
+    type: 'PERCENT' as 'PERCENT' | 'FLAT' | 'FREE_DELIVERY',
+    value: '10',
+    minOrderRupees: '0',
+    maxDiscountRupees: '',
+    perUserLimit: '1',
+    totalUsageLimit: '',
+    firstOrderOnly: false,
+    startsAt: '',
+    endsAt: '',
+  });
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   const [staffDraft, setStaffDraft] = useState({
@@ -445,12 +458,95 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
     );
   };
 
+  const createPromotion = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    const draft = promotionDraft;
+    const code = draft.code.trim().toUpperCase();
+    const name = draft.name.trim();
+
+    if (!code || !name) {
+      setError('A promotion needs a code and a name.');
+      return;
+    }
+    if (!draft.startsAt || !draft.endsAt) {
+      setError('Choose a start and end date for the promotion.');
+      return;
+    }
+
+    const numericValue = Number(draft.value);
+    if (!Number.isFinite(numericValue) || numericValue < 0) {
+      setError('Enter a valid discount value.');
+      return;
+    }
+
+    const value =
+      draft.type === 'PERCENT'
+        ? Math.round(numericValue)
+        : draft.type === 'FLAT'
+          ? Math.round(numericValue * 100)
+          : 0;
+    const minOrderPaise = Math.round(
+      Number(draft.minOrderRupees || 0) * 100,
+    );
+    const maxDiscountPaise = draft.maxDiscountRupees.trim()
+      ? Math.round(Number(draft.maxDiscountRupees) * 100)
+      : null;
+
+    if (!Number.isFinite(minOrderPaise) || minOrderPaise < 0) {
+      setError('Minimum order must be a non-negative amount.');
+      return;
+    }
+
+    await run(
+      () =>
+        api.admin.createPromotion({
+          code,
+          name,
+          type: draft.type,
+          value,
+          minOrderPaise,
+          maxDiscountPaise,
+          startsAt: new Date(draft.startsAt).toISOString(),
+          endsAt: new Date(draft.endsAt).toISOString(),
+          status: 'APPROVED',
+          perUserLimit: Math.max(1, Number(draft.perUserLimit) || 1),
+          totalUsageLimit: draft.totalUsageLimit.trim()
+            ? Math.max(1, Number(draft.totalUsageLimit) || 1)
+            : null,
+          firstOrderOnly: draft.firstOrderOnly,
+        }),
+      `Promotion ${code} is live.`,
+    );
+
+    setPromotionDraft({
+      code: '',
+      name: '',
+      type: 'PERCENT',
+      value: '10',
+      minOrderRupees: '0',
+      maxDiscountRupees: '',
+      perUserLimit: '1',
+      totalUsageLimit: '',
+      firstOrderOnly: false,
+      startsAt: '',
+      endsAt: '',
+    });
+  };
+
   const pendingPromotions = promotions.filter(
-    (promotion) => promotion.status === 'PENDING_ADMIN_APPROVAL',
+    (promotion) => promotion.status === 'PENDING_APPROVAL',
   );
   const reviewedPromotions = promotions.filter(
-    (promotion) => promotion.status !== 'PENDING_ADMIN_APPROVAL',
+    (promotion) => promotion.status !== 'PENDING_APPROVAL',
   );
+
+  const describePromotionValue = (promotion: any) => {
+    if (promotion.type === 'PERCENT') return `${promotion.value}% off`;
+    if (promotion.type === 'FLAT') return `₹${promotion.value / 100} off`;
+    if (promotion.type === 'FREE_DELIVERY') return 'Free delivery';
+    return promotion.type;
+  };
 
   if (allowedTabs.length === 0) {
     return (
@@ -1456,6 +1552,185 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
 
           {visibleTab === 'promotions' && (
             <div className="space-y-6">
+              <form
+                onSubmit={createPromotion}
+                className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 p-5 space-y-3"
+              >
+                <h2 className="text-sm font-extrabold text-gray-900 dark:text-white">
+                  Create a promotion
+                </h2>
+                <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                  Approved promotions are live immediately inside their window.
+                  The pricing engine enforces the minimum order and usage limits.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    required
+                    value={promotionDraft.code}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        code: event.target.value.toUpperCase(),
+                      }))
+                    }
+                    placeholder="CODE"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold tracking-wide text-gray-900 dark:text-white"
+                  />
+                  <input
+                    required
+                    value={promotionDraft.name}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        name: event.target.value,
+                      }))
+                    }
+                    placeholder="Customer-facing name"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <select
+                    value={promotionDraft.type}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        type: event.target.value as any,
+                      }))
+                    }
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white"
+                  >
+                    <option value="PERCENT">Percent off</option>
+                    <option value="FLAT">Flat ₹ off</option>
+                    <option value="FREE_DELIVERY">Free delivery</option>
+                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    disabled={promotionDraft.type === 'FREE_DELIVERY'}
+                    value={
+                      promotionDraft.type === 'FREE_DELIVERY'
+                        ? '0'
+                        : promotionDraft.value
+                    }
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        value: event.target.value,
+                      }))
+                    }
+                    placeholder={
+                      promotionDraft.type === 'PERCENT' ? '%' : '₹'
+                    }
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white disabled:opacity-50"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    value={promotionDraft.minOrderRupees}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        minOrderRupees: event.target.value,
+                      }))
+                    }
+                    placeholder="Min order ₹"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    value={promotionDraft.maxDiscountRupees}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        maxDiscountRupees: event.target.value,
+                      }))
+                    }
+                    placeholder="Max discount ₹"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    value={promotionDraft.perUserLimit}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        perUserLimit: event.target.value,
+                      }))
+                    }
+                    placeholder="Uses / customer"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    value={promotionDraft.totalUsageLimit}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        totalUsageLimit: event.target.value,
+                      }))
+                    }
+                    placeholder="Total uses"
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                  <input
+                    required
+                    type="datetime-local"
+                    value={promotionDraft.startsAt}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        startsAt: event.target.value,
+                      }))
+                    }
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                  <input
+                    required
+                    type="datetime-local"
+                    value={promotionDraft.endsAt}
+                    onChange={(event) =>
+                      setPromotionDraft((draft) => ({
+                        ...draft,
+                        endsAt: event.target.value,
+                      }))
+                    }
+                    className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <label className="flex items-center gap-2 text-[11px] font-bold text-gray-600 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={promotionDraft.firstOrderOnly}
+                      onChange={(event) =>
+                        setPromotionDraft((draft) => ({
+                          ...draft,
+                          firstOrderOnly: event.target.checked,
+                        }))
+                      }
+                    />
+                    First order only
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold disabled:opacity-50"
+                  >
+                    {busy ? 'Creating…' : 'Create approved promotion'}
+                  </button>
+                </div>
+              </form>
+
               <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 overflow-hidden">
                 <div className="p-5 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
                   <h2 className="text-sm font-extrabold text-gray-900 dark:text-white">
@@ -1473,14 +1748,19 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
                     >
                       <div>
                         <div className="text-xs font-extrabold text-gray-900 dark:text-white">
-                          {promotion.type.replace(/_/g, ' ')} • {promotion.brandName}
+                          {promotion.code} · {promotion.name}
+                        </div>
+                        <div className="text-[10px] text-gray-400">
+                          {promotion.brandName}
+                          {promotion.hubName ? ` · ${promotion.hubName}` : ''} ·{' '}
+                          {describePromotionValue(promotion)}
+                          {promotion.minOrderPaise > 0
+                            ? ` · min ₹${promotion.minOrderPaise / 100}`
+                            : ''}
                         </div>
                         <div className="text-[10px] text-gray-400">
                           {new Date(promotion.startsAt).toLocaleString('en-IN')} →{' '}
                           {new Date(promotion.endsAt).toLocaleString('en-IN')}
-                          {promotion.config?.discountPct !== undefined
-                            ? ` • ${promotion.config.discountPct}% off`
-                            : ''}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1521,7 +1801,13 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
                     >
                       <div>
                         <div className="font-bold text-gray-900 dark:text-white">
-                          {promotion.type.replace(/_/g, ' ')} • {promotion.brandName}
+                          {promotion.code} · {promotion.name}
+                        </div>
+                        <div className="text-[10px] text-gray-400">
+                          {promotion.brandName} · {describePromotionValue(promotion)}
+                          {promotion.minOrderPaise > 0
+                            ? ` · min ₹${promotion.minOrderPaise / 100}`
+                            : ''}
                         </div>
                         <div className="text-[10px] text-gray-400">
                           {new Date(promotion.startsAt).toLocaleDateString('en-IN')} →{' '}

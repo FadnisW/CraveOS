@@ -319,6 +319,13 @@ export class AdminController {
     return this.adminService.setPromotionStatus(id, status, req.user?.sub);
   }
 
+  @Post('promotions')
+  @Roles('ADMIN')
+  @AdminSubRoles('MARKETING_ADMIN', 'SUPER_ADMIN')
+  async createPromotion(@Request() req: any, @Body() body: any) {
+    return this.adminService.createPromotion(body, req.user?.sub);
+  }
+
   /**
    * Audit Logs: Query
    */

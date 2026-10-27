@@ -93,6 +93,36 @@ const RULES = [
     pattern: /Happy Hours Live|MOJO 2X Loaded|isHappyHour:\s*happyHourRule\s*\?/,
   },
   {
+    id: 'legacy-pricing-rule',
+    why: 'The PricingRule model was removed. Quotes and promotions use Promotion.',
+    include: ['src/', 'apps/api/src/'],
+    pattern: /\bPricingRule\b/,
+  },
+  {
+    id: 'legacy-quote-endpoint',
+    why: 'The unauthenticated /pricing/calculate endpoint was removed. Use POST /pricing/quote.',
+    include: ['src/', 'apps/api/src/'],
+    pattern: /\/pricing\/calculate\b/,
+  },
+  {
+    id: 'legacy-promotion-status',
+    why: 'Promotion proposals use PENDING_APPROVAL. PENDING_ADMIN_APPROVAL no longer exists.',
+    include: ['src/', 'apps/api/src/'],
+    pattern: /\bPENDING_ADMIN_APPROVAL\b/,
+  },
+  {
+    id: 'welcome-wallet-cash',
+    why: 'New accounts receive a first-order coupon, never wallet cash. Do not reintroduce WELCOME_BONUS credits.',
+    include: ['apps/api/src/modules/auth/'],
+    pattern: /\bWELCOME_BONUS\b/,
+  },
+  {
+    id: 'fake-membership-screen',
+    why: 'The static membership screen was deleted. Membership is purchased inside ProfileScreen.',
+    include: ['src/'],
+    pattern: /\bMembershipScreen\b/,
+  },
+  {
     id: 'hardcoded-coords',
     why: 'Pins the storefront to fixed coordinates instead of the selected address.',
     include: ['src/'],

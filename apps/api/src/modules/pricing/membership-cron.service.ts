@@ -23,10 +23,7 @@ export class MembershipCronService {
     const expiredMemberships = await this.prisma.membership.findMany({
       where: {
         status: { in: ['TRIAL', 'ACTIVE'] },
-        OR: [
-          { trialEndsAt: { lt: now } },
-          { renewsAt: { lt: now } },
-        ],
+        endsAt: { lt: now },
       },
       include: {
         user: true,

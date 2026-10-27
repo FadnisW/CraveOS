@@ -21,21 +21,14 @@ export type { AuthenticatedActor };
 export type PaymentMethod = 'UPI' | 'CARD' | 'WALLET';
 
 export interface CreateOrderDto {
-  /** Ignored — the authenticated principal is always the order owner. */
-  userId?: string;
   hubId?: string;
   addressId: string;
   couponCode?: string;
-  useWalletBalance?: number;
+  useWalletBalancePaise?: number;
   paymentMethod?: PaymentMethod;
   items: {
     menuItemId: string;
     quantity: number;
-    /** Legacy client-supplied fields — accepted for compatibility but never trusted for money. */
-    brandId?: string;
-    nameSnapshot?: string;
-    mrp?: number;
-    price?: number;
   }[];
 }
 
@@ -136,288 +129,232 @@ export class OrdersService {
       throw new BadRequestException('A delivery address is required');
     }
 
-    // Normalise quantities. Duplicate lines for the same item are merged so a
-    // client cannot bypass per-item limits by repeating a line.
-    const requestedQty = new Map<string, number>();
-    for (const line of dto.items) {
-      if (!line?.menuItemId) {
-        throw new BadRequestException('Every cart line needs a menuItemId');
-      }
-      const qty = Number(line.quantity);
-      if (!Number.isInteger(qty) || qty <= 0) {
-        throw new BadRequestException('Quantity must be a positive whole number');
-      }
-      if (qty > 50) {
-        throw new BadRequestException('Quantity per item cannot exceed 50');
-      }
-      requestedQty.set(line.menuItemId, (requestedQty.get(line.menuItemId) || 0) + qty);
-    }
-
-    // The delivery address must belong to the caller.
-    const address = await this.prisma.address.findUnique({ where: { id: dto.addressId } });
-    if (!address) {
-      throw new NotFoundException('Delivery address not found');
-    }
-    if (address.userId !== userId) {
-      throw new ForbiddenException('This delivery address does not belong to you');
-    }
-
-    const hubId = dto.hubId || address.resolvedHubId;
-    if (!hubId) {
-      throw new BadRequestException('Could not resolve a delivery hub for this address');
-    }
-
-    const hub = await this.prisma.hub.findUnique({
-      where: { id: hubId },
-      select: { id: true, lat: true, lng: true },
-    });
-    if (!hub) {
-      throw new BadRequestException('The selected hub does not exist');
-    }
-
-    const estimatedDeliveryMins = this.estimateDeliveryMinutes(hub, address);
-
-    // -------------------------------------------------------------------------
-    // Server-authoritative pricing: every rupee comes from the database.
-    // The client's `mrp` / `price` / `nameSnapshot` / `brandId` are ignored.
-    // -------------------------------------------------------------------------
-    const menuItemIds = [...requestedQty.keys()];
-    const dbItems = await this.prisma.menuItem.findMany({
-      where: { id: { in: menuItemIds } },
-      include: { brandKitchen: true },
-    });
-
-    // A cart may hold the copy of an item owned by another kitchen of the
-    // same brand (the storefront shows one card per logical item). Resolve
-    // that logical item to the copy that belongs to the selected hub.
-    const groupIds = [
-      ...new Set(
-        dbItems
-          .map((item) => item.menuItemGroupId)
-          .filter((groupId): groupId is string => !!groupId),
-      ),
-    ];
-    const hubCopies = groupIds.length
-      ? await this.prisma.menuItem.findMany({
-          where: {
-            menuItemGroupId: { in: groupIds },
-            brandKitchen: { hubId },
-          },
-          include: { brandKitchen: true },
-        })
-      : [];
-    const copyByGroup = new Map(
-      hubCopies.map((item) => [item.menuItemGroupId as string, item]),
-    );
-
-    const lines = menuItemIds.map((menuItemId) => {
-      const requested = dbItems.find((i) => i.id === menuItemId);
-      if (!requested) {
-        throw new BadRequestException('A cart item is no longer on the menu. Please refresh your cart.');
-      }
-
-      const dbItem =
-        requested.brandKitchen.hubId === hubId
-          ? requested
-          : requested.menuItemGroupId
-            ? copyByGroup.get(requested.menuItemGroupId)
-            : undefined;
-
-      if (!dbItem || !dbItem.brandKitchen) {
-        throw new BadRequestException(
-          `Cross-Hub Conflict: '${requested.name}' is not served from the selected hub.`,
-        );
-      }
-      if (!dbItem.isAvailable) {
-        throw new ConflictException(`'${dbItem.name}' is currently out of stock (86'd).`);
-      }
-
-      return {
-        menuItemId: dbItem.id,
-        brandId: dbItem.brandKitchen.brandId,
-        nameSnapshot: dbItem.name,
-        mrpInPaise: dbItem.mrpInPaise,
-        // Defensive: a bad catalogue row must never make the member price exceed MRP.
-        memberPriceInPaise: Math.min(dbItem.memberPriceInPaise, dbItem.mrpInPaise),
-        quantity: requestedQty.get(menuItemId)!,
-      };
-    });
-
-    // Edge Case 9A (SDD §5.2 & §7.3): the coupon itself is validated by the
-    // pricing engine below. There is no clock-based "Happy Hour" gate.
-
-    const priceBreakdown = await this.pricingService.calculateCartPrice({
-      userId,
-      items: lines.map((l) => ({
-        price: l.mrpInPaise / 100,
-        memberPrice: l.memberPriceInPaise / 100,
-        quantity: l.quantity,
-      })),
-      couponCode: dto.couponCode,
-      useWalletBalance: Math.max(0, Number(dto.useWalletBalance) || 0),
-    });
-
-    // A coupon the customer saw in the cart must actually be honoured. Silently
-    // charging full price is a money-correctness bug, so reject instead.
-    if (dto.couponCode && priceBreakdown.couponInvalid) {
-      throw new BadRequestException(
-        `Coupon '${dto.couponCode}' is not valid for this cart. Remove it and try again.`,
-      );
-    }
-
-    const isMember = priceBreakdown.isMemberVerified;
-    const mrpTotalPaise = Math.round(priceBreakdown.itemTotal * 100);
-    const memberSavingsPaise = Math.round(priceBreakdown.memberDiscount * 100);
-    const deliveryFeePaise = Math.round(priceBreakdown.deliveryFee * 100);
-    const packagingFeePaise = Math.round(priceBreakdown.packagingFee * 100);
-    const taxPaise = Math.round(priceBreakdown.taxes * 100);
-    const walletAppliedPaise = Math.round(priceBreakdown.walletApplied * 100);
-    const finalPaidPaise = Math.round(priceBreakdown.finalPayable * 100);
-
     const paymentMethod: PaymentMethod = dto.paymentMethod || 'UPI';
     if (!['UPI', 'CARD', 'WALLET'].includes(paymentMethod)) {
       throw new BadRequestException(
         `Unsupported payment method '${paymentMethod}'. Use UPI, CARD or WALLET.`,
       );
     }
-    if (paymentMethod === 'WALLET' && finalPaidPaise > 0) {
-      throw new ConflictException(
-        'Your wallet balance does not cover this order. Choose another payment method or remove items.',
+
+    const useWalletBalancePaise = Number(dto.useWalletBalancePaise ?? 0);
+    if (!Number.isInteger(useWalletBalancePaise) || useWalletBalancePaise < 0) {
+      throw new BadRequestException(
+        'useWalletBalancePaise must be a non-negative whole number of paise',
       );
     }
-
-    // Group by the *database* brand id — never the one supplied by the client.
-    const itemsByBrand = new Map<string, typeof lines>();
-    for (const line of lines) {
-      const existing = itemsByBrand.get(line.brandId) || [];
-      existing.push(line);
-      itemsByBrand.set(line.brandId, existing);
-    }
-
-    this.logger.log(
-      `🚀 Creating order across ${itemsByBrand.size} brand kitchen ticket(s). Payable: ₹${
-        priceBreakdown.finalPayable
-      } (wallet ₹${priceBreakdown.walletApplied})`,
-    );
 
     let createdOrder: any;
     try {
       createdOrder = await this.prisma.$transaction(async (tx) => {
-      // Re-validate availability inside the transaction — an item can be 86'd
-      // between the pricing read above and the write below.
-      const freshItems = await tx.menuItem.findMany({
-        where: { id: { in: menuItemIds } },
-        select: { id: true, isAvailable: true },
-      });
-      for (const line of lines) {
-        const fresh = freshItems.find((i) => i.id === line.menuItemId);
-        if (!fresh || !fresh.isAvailable) {
-          throw new ConflictException(`'${line.nameSnapshot}' is currently out of stock (86'd).`);
+        // Every price, fee, tax, membership benefit and promotion is resolved
+        // inside the same transaction that writes the order.
+        const priceBreakdown = await this.pricingService.quote(
+          {
+            userId,
+            addressId: dto.addressId,
+            hubId: dto.hubId,
+            items: dto.items,
+            couponCode: dto.couponCode,
+            useWalletBalancePaise,
+            lockPromotion: true,
+          },
+          tx,
+        );
+
+        // A coupon the customer saw in the cart must actually be honoured.
+        // Silently charging full price is a money-correctness bug.
+        if (dto.couponCode && priceBreakdown.couponInvalid) {
+          throw new BadRequestException(
+            priceBreakdown.couponMessage ||
+              `Coupon '${dto.couponCode}' is not valid for this cart. Remove it and try again.`,
+          );
         }
-      }
 
-      const parentOrder = await tx.order.create({
-        data: {
-          userId,
-          hubId,
-          addressId: dto.addressId,
-          idempotencyKey: retryKey,
-          mrpTotalPaise,
-          memberSavingsPaise,
-          deliveryFeePaise,
-          packagingFeePaise,
-          taxPaise,
-          walletAppliedPaise,
-          finalPaidPaise,
-          estimatedDeliveryMins,
-          paymentMethod,
-          discountBreakdown: priceBreakdown.savingsSummary,
-          status: 'PLACED',
-        },
-      });
+        const { hubId, amounts } = priceBreakdown;
 
-      for (const [brandId, brandLines] of itemsByBrand.entries()) {
-        await tx.brandOrder.create({
+        if (paymentMethod === 'WALLET' && amounts.finalPayablePaise > 0) {
+          throw new ConflictException(
+            'Your wallet balance does not cover this order. Choose another payment method or remove items.',
+          );
+        }
+
+        const address = await tx.address.findUnique({
+          where: { id: dto.addressId },
+        });
+        if (!address) {
+          throw new NotFoundException('Delivery address not found');
+        }
+
+        const hub = await tx.hub.findUnique({
+          where: { id: hubId },
+          select: { id: true, lat: true, lng: true },
+        });
+        if (!hub) {
+          throw new BadRequestException('The selected hub does not exist');
+        }
+
+        const estimatedDeliveryMins = this.estimateDeliveryMinutes(
+          hub,
+          address,
+        );
+
+        const lines = priceBreakdown.lines.map((line) => ({
+          menuItemId: line.menuItemId,
+          brandId: line.brandId,
+          nameSnapshot: line.name,
+          mrpInPaise: line.mrpInPaise,
+          memberPriceInPaise: line.memberPriceInPaise,
+          quantity: line.quantity,
+        }));
+
+        // Group by the *database* brand id — never one supplied by the client.
+        const itemsByBrand = new Map<string, typeof lines>();
+        for (const line of lines) {
+          const existing = itemsByBrand.get(line.brandId) || [];
+          existing.push(line);
+          itemsByBrand.set(line.brandId, existing);
+        }
+
+        this.logger.log(
+          `🚀 Creating order across ${itemsByBrand.size} brand kitchen ticket(s). Payable: ₹${
+            amounts.finalPayablePaise / 100
+          } (wallet ₹${amounts.walletAppliedPaise / 100})`,
+        );
+
+        const parentOrder = await tx.order.create({
           data: {
-            orderId: parentOrder.id,
-            brandId,
-            status: 'SENT_TO_KITCHEN',
-            items: {
-              create: brandLines.map((l) => ({
-                menuItemId: l.menuItemId,
-                nameSnapshot: l.nameSnapshot,
-                mrpSnapshot: l.mrpInPaise,
-                priceSnapshot: isMember ? l.memberPriceInPaise : l.mrpInPaise,
-                quantity: l.quantity,
-              })),
+            userId,
+            hubId,
+            addressId: dto.addressId,
+            idempotencyKey: retryKey,
+            mrpTotalPaise: amounts.itemTotalPaise,
+            memberSavingsPaise: amounts.memberDiscountPaise,
+            deliveryFeePaise: amounts.deliveryFeePaise,
+            packagingFeePaise: amounts.packagingFeePaise,
+            taxPaise: amounts.taxPaise,
+            walletAppliedPaise: amounts.walletAppliedPaise,
+            finalPaidPaise: amounts.finalPayablePaise,
+            estimatedDeliveryMins,
+            paymentMethod,
+            discountBreakdown: {
+              ...priceBreakdown.savingsSummary,
+              couponCode: priceBreakdown.coupon?.applied
+                ? priceBreakdown.coupon.code
+                : null,
+              couponDiscountPaise: amounts.couponDiscountPaise,
+              foodDiscountPaise: amounts.foodDiscountPaise,
+              deliveryDiscountPaise: amounts.deliveryDiscountPaise,
             },
+            status: 'PLACED',
           },
         });
-      }
 
-      // Wallet money is only moved when it is actually being spent now:
-      //  - WALLET: the order is settled immediately.
-      //  - UPI/CARD: debited on verified payment success (see PaymentsService),
-      //    so abandoning the Razorpay modal no longer silently burns wallet credit.
-      // If wallet credit covers the entire bill there is nothing left for a
-      // gateway to charge, so settle it from the wallet even when the customer
-      // picked UPI/CARD. Otherwise the order would never become paid.
-      const walletCoversAll = walletAppliedPaise > 0 && finalPaidPaise === 0;
-      const isFreeOrder = walletAppliedPaise === 0 && finalPaidPaise === 0;
+        for (const [brandId, brandLines] of itemsByBrand.entries()) {
+          await tx.brandOrder.create({
+            data: {
+              orderId: parentOrder.id,
+              brandId,
+              status: 'SENT_TO_KITCHEN',
+              items: {
+                create: brandLines.map((l) => ({
+                  menuItemId: l.menuItemId,
+                  nameSnapshot: l.nameSnapshot,
+                  mrpSnapshot: l.mrpInPaise,
+                  priceSnapshot: priceBreakdown.isMember
+                    ? l.memberPriceInPaise
+                    : l.mrpInPaise,
+                  quantity: l.quantity,
+                })),
+              },
+            },
+          });
+        }
 
-      if (paymentMethod === 'WALLET' || walletCoversAll) {
-        await this.debitWallet(tx, userId, walletAppliedPaise, parentOrder.id);
+        // A redemption is the audit trail for a coupon discount. The pricing
+        // engine has already locked the promotion row and checked its limits.
+        if (
+          priceBreakdown.coupon?.applied &&
+          priceBreakdown.coupon.promotionId
+        ) {
+          await tx.promotionRedemption.create({
+            data: {
+              promotionId: priceBreakdown.coupon.promotionId,
+              userId,
+              orderId: parentOrder.id,
+              discountPaise: priceBreakdown.coupon.discountPaise,
+            },
+          });
+        }
+
+        // Wallet money is only moved when it is actually being spent now:
+        //  - WALLET: the order is settled immediately.
+        //  - UPI/CARD: debited on verified payment success (see PaymentsService),
+        //    so abandoning the Razorpay modal no longer silently burns wallet credit.
+        // If wallet credit covers the entire bill there is nothing left for a
+        // gateway to charge, so settle it from the wallet even when the customer
+        // picked UPI/CARD. Otherwise the order would never become paid.
+        const walletCoversAll =
+          amounts.walletAppliedPaise > 0 && amounts.finalPayablePaise === 0;
+        const isFreeOrder =
+          amounts.walletAppliedPaise === 0 && amounts.finalPayablePaise === 0;
 
         if (paymentMethod === 'WALLET' || walletCoversAll) {
+          await this.debitWallet(
+            tx,
+            userId,
+            amounts.walletAppliedPaise,
+            parentOrder.id,
+          );
+
           await tx.payment.create({
             data: {
               orderId: parentOrder.id,
               gateway: 'wallet',
               status: 'SUCCESS',
-              amountInPaise: walletAppliedPaise,
+              amountInPaise: amounts.walletAppliedPaise,
             },
           });
         }
-      }
 
-      // A ₹0 order (100% coupon) still needs a settled payment row so the
-      // kitchen payment gate does not block it forever.
-      if (isFreeOrder && paymentMethod !== 'WALLET') {
-        await tx.payment.create({
+        // A ₹0 order (100% coupon) still needs a settled payment row so the
+        // kitchen payment gate does not block it forever.
+        if (isFreeOrder && paymentMethod !== 'WALLET') {
+          await tx.payment.create({
+            data: {
+              orderId: parentOrder.id,
+              gateway: 'wallet',
+              status: 'SUCCESS',
+              amountInPaise: 0,
+            },
+          });
+        }
+
+        await tx.auditLog.create({
           data: {
-            orderId: parentOrder.id,
-            gateway: 'wallet',
-            status: 'SUCCESS',
-            amountInPaise: 0,
+            action: 'ORDER_CREATED',
+            actorId: userId,
+            recordId: parentOrder.id,
+            diff: {
+              finalPaidPaise: amounts.finalPayablePaise,
+              mrpTotalPaise: amounts.itemTotalPaise,
+              memberSavingsPaise: amounts.memberDiscountPaise,
+              couponDiscountPaise: amounts.couponDiscountPaise,
+              walletAppliedPaise: amounts.walletAppliedPaise,
+              paymentMethod,
+              brandCount: itemsByBrand.size,
+            },
           },
         });
-      }
 
-      await tx.auditLog.create({
-        data: {
-          action: 'ORDER_CREATED',
-          actorId: userId,
-          recordId: parentOrder.id,
-          diff: {
-            finalPaidPaise,
-            mrpTotalPaise,
-            memberSavingsPaise,
-            walletAppliedPaise,
-            paymentMethod,
-            brandCount: itemsByBrand.size,
+        return tx.order.findUnique({
+          where: { id: parentOrder.id },
+          include: {
+            brandOrders: { include: { items: true } },
+            address: true,
+            hub: true,
+            payment: true,
           },
-        },
-      });
-
-      return tx.order.findUnique({
-        where: { id: parentOrder.id },
-        include: {
-          brandOrders: { include: { items: true } },
-          address: true,
-          hub: true,
-          payment: true,
-        },
-      });
+        });
       });
     } catch (error: any) {
       // Two concurrent retries can both miss the pre-check; the unique index
@@ -443,7 +380,7 @@ export class OrdersService {
       for (const brandOrder of createdOrder.brandOrders) {
         try {
           await this.kitchenQueue.add('brand_order.created', {
-            hubId,
+            hubId: createdOrder.hubId,
             orderId: createdOrder.id,
             brandOrder,
           });
@@ -604,6 +541,10 @@ export class OrdersService {
           payment: true,
         },
       });
+
+      // An unpaid, cancelled order never delivered anything. Release the coupon
+      // so a dismissed payment does not burn the customer's one-use code.
+      await tx.promotionRedemption.deleteMany({ where: { orderId } });
 
       await tx.auditLog.create({
         data: {
@@ -992,6 +933,12 @@ export class OrdersService {
           status: allRejected ? 'CANCELLED' : updated.order.status,
         },
       });
+
+      // A fully rejected order is refunded and cancelled. Release the coupon so
+      // the customer can use it on a replacement order.
+      if (allRejected) {
+        await tx.promotionRedemption.deleteMany({ where: { orderId } });
+      }
 
       await tx.auditLog.create({
         data: {

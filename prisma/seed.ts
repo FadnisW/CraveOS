@@ -346,6 +346,15 @@ async function main() {
   // 4. Demo customer used by the storefront's sign-in shortcut.
   //    The storefront keeps an address book in localStorage, but orders can
   //    only reference database rows owned by the buyer — so these must exist.
+  // The demo customer's opening balance is a real ledger entry, so the wallet
+  // reconciliation query stays empty on a freshly seeded database. Only a newly
+  // created demo user gets it: re-seeding an existing account must not mint
+  // credit or add a second opening row.
+  const existingDemoCustomer = await prisma.user.findUnique({
+    where: { id: 'usr-101' },
+    select: { id: true },
+  });
+
   const demoCustomer = await prisma.user.upsert({
     where: { id: 'usr-101' },
     update: {
@@ -353,7 +362,8 @@ async function main() {
       name: 'Alex Morgan',
       phone: '+919876543210',
       role: 'CUSTOMER',
-      walletBalance: 25000,
+      // Never reset the wallet on re-seed: that would silently create a balance
+      // with no matching ledger row.
     },
     create: {
       id: 'usr-101',
@@ -366,24 +376,212 @@ async function main() {
     },
   });
 
+  // The demo customer's opening balance is a real ledger entry, so the wallet
+  // reconciliation query stays empty on a freshly seeded database.
+  if (!existingDemoCustomer) {
+    await prisma.walletTransaction.create({
+      data: {
+        id: 'wt-seed-demo-wallet',
+        userId: demoCustomer.id,
+        amountInPaise: 25000,
+        reason: 'ADMIN_ADJUSTMENT',
+        referenceType: 'SEED',
+        referenceId: 'demo-customer-opening-balance',
+      },
+    });
+  }
+
+  // Launch membership plans and promotions are real configuration. The
+  // production migration inserts the same rows; this keeps a freshly seeded
+  // development database identical.
+  const trialPlan = await prisma.membershipPlan.upsert({
+    where: { id: 'plan-trial' },
+    update: {
+      slug: 'trial',
+      name: 'Free Trial',
+      description: '30 days of member prices and free delivery.',
+      durationDays: 30,
+      priceInPaise: 0,
+      isTrial: true,
+      isActive: true,
+      sortOrder: 0,
+    },
+    create: {
+      id: 'plan-trial',
+      slug: 'trial',
+      name: 'Free Trial',
+      description: '30 days of member prices and free delivery.',
+      durationDays: 30,
+      priceInPaise: 0,
+      isTrial: true,
+      isActive: true,
+      sortOrder: 0,
+    },
+  });
+
+  await prisma.membershipPlan.upsert({
+    where: { id: 'plan-monthly' },
+    update: {
+      slug: 'monthly',
+      name: 'Monthly Membership',
+      description: 'Member prices and free delivery for 30 days.',
+      durationDays: 30,
+      priceInPaise: 9900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 10,
+    },
+    create: {
+      id: 'plan-monthly',
+      slug: 'monthly',
+      name: 'Monthly Membership',
+      description: 'Member prices and free delivery for 30 days.',
+      durationDays: 30,
+      priceInPaise: 9900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 10,
+    },
+  });
+
+  await prisma.membershipPlan.upsert({
+    where: { id: 'plan-quarterly' },
+    update: {
+      slug: 'quarterly',
+      name: 'Quarterly Membership',
+      description: 'Member prices and free delivery for 90 days.',
+      durationDays: 90,
+      priceInPaise: 24900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 20,
+    },
+    create: {
+      id: 'plan-quarterly',
+      slug: 'quarterly',
+      name: 'Quarterly Membership',
+      description: 'Member prices and free delivery for 90 days.',
+      durationDays: 90,
+      priceInPaise: 24900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 20,
+    },
+  });
+
+  await prisma.membershipPlan.upsert({
+    where: { id: 'plan-annual' },
+    update: {
+      slug: 'annual',
+      name: 'Annual Membership',
+      description: 'Member prices and free delivery for 365 days.',
+      durationDays: 365,
+      priceInPaise: 89900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 30,
+    },
+    create: {
+      id: 'plan-annual',
+      slug: 'annual',
+      name: 'Annual Membership',
+      description: 'Member prices and free delivery for 365 days.',
+      durationDays: 365,
+      priceInPaise: 89900,
+      isTrial: false,
+      isActive: true,
+      sortOrder: 30,
+    },
+  });
+
+  const promotionStartsAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const promotionEndsAt = new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
+
+  const launchPromotions = [
+    {
+      id: 'promo-welcome100',
+      code: 'WELCOME100',
+      name: 'Welcome ₹100 off',
+      description: '₹100 off your first order above ₹199.',
+      value: 10000,
+      minOrderPaise: 19900,
+      perUserLimit: 1,
+      firstOrderOnly: true,
+    },
+    {
+      id: 'promo-eatclub100',
+      code: 'EATCLUB100',
+      name: '₹100 off ₹499',
+      description: '₹100 off orders above ₹499.',
+      value: 10000,
+      minOrderPaise: 49900,
+      perUserLimit: 1,
+      firstOrderOnly: false,
+    },
+    {
+      id: 'promo-crave50',
+      code: 'CRAVE50',
+      name: '₹50 off ₹299',
+      description: '₹50 off orders above ₹299.',
+      value: 5000,
+      minOrderPaise: 29900,
+      perUserLimit: 2,
+      firstOrderOnly: false,
+    },
+  ];
+
+  for (const promotion of launchPromotions) {
+    await prisma.promotion.upsert({
+      where: { code: promotion.code },
+      update: {
+        name: promotion.name,
+        description: promotion.description,
+        type: 'FLAT',
+        value: promotion.value,
+        minOrderPaise: promotion.minOrderPaise,
+        maxDiscountPaise: promotion.value,
+        startsAt: promotionStartsAt,
+        endsAt: promotionEndsAt,
+        status: 'APPROVED',
+        totalUsageLimit: null,
+        perUserLimit: promotion.perUserLimit,
+        firstOrderOnly: promotion.firstOrderOnly,
+      },
+      create: {
+        id: promotion.id,
+        code: promotion.code,
+        name: promotion.name,
+        description: promotion.description,
+        type: 'FLAT',
+        value: promotion.value,
+        minOrderPaise: promotion.minOrderPaise,
+        maxDiscountPaise: promotion.value,
+        startsAt: promotionStartsAt,
+        endsAt: promotionEndsAt,
+        status: 'APPROVED',
+        totalUsageLimit: null,
+        perUserLimit: promotion.perUserLimit,
+        firstOrderOnly: promotion.firstOrderOnly,
+      },
+    });
+  }
+
   // The demo customer mirrors what a real new signup gets: a 30-day trial.
-  // There is no paid membership flow yet, so seeding an ACTIVE plan with a
-  // far-future renewal would misrepresent the product.
   const demoTrialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
   await prisma.membership.upsert({
     where: { userId: demoCustomer.id },
     update: {
       status: 'TRIAL',
-      planId: 'STANDARD_TRIAL',
-      trialEndsAt: demoTrialEndsAt,
-      renewsAt: null,
+      planId: trialPlan.id,
+      endsAt: demoTrialEndsAt,
     },
     create: {
       userId: demoCustomer.id,
       status: 'TRIAL',
-      planId: 'STANDARD_TRIAL',
-      trialEndsAt: demoTrialEndsAt,
+      planId: trialPlan.id,
+      startedAt: new Date(),
+      endsAt: demoTrialEndsAt,
     },
   });
 

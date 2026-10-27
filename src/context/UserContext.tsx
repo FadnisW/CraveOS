@@ -16,7 +16,7 @@ interface UserContextType {
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
 /** Bumped whenever the persisted user shape changes. */
-const USER_SCHEMA_VERSION = 2;
+const USER_SCHEMA_VERSION = 3;
 
 function normaliseAddress(raw: any): SavedAddress {
   const type = String(raw?.type || 'home').toLowerCase();
@@ -46,19 +46,30 @@ function normaliseUser(raw: any): UserProfile {
     throw new Error('Cannot normalise an empty user');
   }
 
-  const membership = raw.membership;
-  const membershipExpiry = membership?.renewsAt || membership?.trialEndsAt || null;
-  const membershipActive =
-    !!membership &&
-    ['TRIAL', 'ACTIVE'].includes(membership.status) &&
-    (!membershipExpiry || new Date(membershipExpiry).getTime() > Date.now());
+  const rawMembership = raw.membership;
+  // A membership is a single row with a single expiry. A plan is only active
+  // while it is TRIAL/ACTIVE and that expiry is still in the future.
+  const membership =
+    rawMembership && rawMembership.endsAt
+      ? {
+          planId: rawMembership.planId || '',
+          planName:
+            rawMembership.planName ||
+            rawMembership.plan?.name ||
+            rawMembership.planId ||
+            'Membership',
+          planSlug:
+            rawMembership.planSlug ?? rawMembership.plan?.slug ?? null,
+          status: rawMembership.status,
+          startedAt: rawMembership.startedAt || '',
+          endsAt: rawMembership.endsAt,
+          isActive:
+            ['TRIAL', 'ACTIVE'].includes(rawMembership.status) &&
+            new Date(rawMembership.endsAt).getTime() > Date.now(),
+        }
+      : null;
 
-  const isMember =
-    typeof raw.isMember === 'boolean' ? raw.isMember : membershipActive;
-
-  // Do not label a plan the server did not return. There is no paid plan yet,
-  // so inventing "annual" from an ACTIVE status would misrepresent the account.
-  const membershipPlan = raw.membershipPlan;
+  const isMember = membership?.isActive ?? false;
 
   const walletBalance =
     typeof raw.walletBalanceRupees === 'number'
@@ -81,13 +92,13 @@ function normaliseUser(raw: any): UserProfile {
     id: raw.id,
     name: raw.name || '',
     email: raw.email || '',
-    phone: raw.phone || '',
+    phone: raw.phone || undefined,
     role: raw.role,
     adminSubRole: raw.adminSubRole,
     scopedHubId: raw.scopedHubId,
     scopedBrandId: raw.scopedBrandId,
     isMember,
-    membershipPlan,
+    membership,
     walletBalance,
     referralCode: raw.referralCode || '',
     savedAddresses: addresses,

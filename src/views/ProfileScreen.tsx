@@ -1,11 +1,16 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
 import { useApi } from '../hooks/useApi';
 import { EmptyState, ErrorState } from '../components/ui/Feedback';
+import { loadRazorpay, openRazorpay } from '../lib/razorpay';
 import {
+  BadgeCheck,
+  Check,
+  Copy,
+  Gift,
   KeyRound,
   LogOut,
   MapPin,
@@ -30,26 +35,144 @@ interface WalletResponse {
   }>;
 }
 
+interface MembershipPlan {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  durationDays: number;
+  priceInPaise: number;
+  priceRupees: number;
+  monthlyEquivalentRupees: number;
+  benefits: string[];
+}
+
+interface MembershipResponse {
+  membership: {
+    id: string;
+    planId: string;
+    planName: string;
+    planSlug: string | null;
+    status: 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'CANCELLED';
+    startedAt: string;
+    endsAt: string;
+    isActive: boolean;
+    autoRenew: boolean;
+  } | null;
+  purchases: Array<{
+    id: string;
+    planName: string;
+    status: 'INITIATED' | 'SUCCESS' | 'FAILED' | 'REFUNDED';
+    amountInPaise: number;
+    paymentMethod: string;
+    startsAt: string | null;
+    endsAt: string | null;
+    createdAt: string;
+  }>;
+}
+
+interface ReferralsResponse {
+  code: string;
+  reward: {
+    referrerPaise: number;
+    refereePaise: number;
+    maxRewardedReferrals: number;
+    earnedPaise: number;
+    remainingRewardedSlots: number;
+  };
+  stats: {
+    total: number;
+    pending: number;
+    rewarded: number;
+    cancelled: number;
+  };
+  referrals: Array<{
+    id: string;
+    status: 'PENDING' | 'QUALIFIED' | 'REWARDED' | 'CANCELLED';
+    rewardPaise: number;
+    refereeRewardPaise: number;
+    createdAt: string;
+    referee: { name: string | null; email: string | null; joinedAt: string };
+  }>;
+}
+
 const REASON_LABELS: Record<string, string> = {
-  WELCOME_BONUS: 'Welcome credit',
+  // Legacy rows only — new signups receive a coupon, not wallet cash.
+  WELCOME_BONUS: 'Legacy welcome credit',
   ORDER_SPEND: 'Order payment',
   ORDER_REFUND: 'Order refund',
   PARTIAL_ORDER_REFUND: 'Partial order refund',
+  MEMBERSHIP_PURCHASE: 'Membership purchase',
+  REFERRAL_REWARD: 'Referral reward',
   ADMIN_ADJUSTMENT: 'Admin adjustment',
 };
+
+const REFERRAL_STATUS_LABELS: Record<string, string> = {
+  PENDING: 'Waiting for first delivery',
+  QUALIFIED: 'Qualified',
+  REWARDED: 'Rewarded',
+  CANCELLED: 'Cancelled',
+};
+
+function newIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `membership-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function daysRemaining(iso: string) {
+  const ms = new Date(iso).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+}
+
+function formatDate(iso: string | null) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onNavigate,
   onOpenAuthModal,
   onOpenAddressModal,
 }) => {
-  const { user, isAuthenticated, logout } = useUser();
+  const { user, isAuthenticated, logout, refreshUser } = useUser();
 
   const wallet = useApi<WalletResponse>(
     () => api.getWalletBalance(user!.id),
     [user?.id],
     !!user?.id,
   );
+
+  const plans = useApi<MembershipPlan[]>(() => api.membership.getPlans(), []);
+  const membership = useApi<MembershipResponse>(
+    () => api.membership.getMine(),
+    [user?.id],
+    !!user?.id,
+  );
+  const referrals = useApi<ReferralsResponse>(
+    () => api.getMyReferrals(),
+    [user?.id],
+    !!user?.id,
+  );
+  const orders = useApi<any[]>(
+    () => api.getUserOrders(user!.id),
+    [user?.id],
+    !!user?.id,
+  );
+  const offers = useApi<{ offers: any[] }>(() => api.getActiveOffers(), []);
+
+  const [purchasingPlanId, setPurchasingPlanId] = useState<string | null>(null);
+  const [purchaseMethod, setPurchaseMethod] = useState<
+    'WALLET' | 'RAZORPAY' | null
+  >(null);
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [purchaseNotice, setPurchaseNotice] = useState<string | null>(null);
+  const [copied, setCopied] = useState<boolean>(false);
 
   if (!isAuthenticated || !user) {
     return (
@@ -62,7 +185,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             Sign in to your account
           </h2>
           <p className="text-xs sm:text-sm text-gray-500 dark:text-slate-400 max-w-md mx-auto">
-            View your orders, saved addresses, and wallet balance.
+            View your orders, membership, wallet balance and referrals.
           </p>
         </div>
 
@@ -79,6 +202,102 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   const balance = wallet.data?.balanceRupees ?? user.walletBalance;
   const transactions = wallet.data?.transactions || [];
+  const currentMembership = membership.data?.membership || null;
+  const purchasablePlans = plans.data || [];
+  const referralData = referrals.data;
+  const hasOrders = Array.isArray(orders.data) && orders.data.length > 0;
+
+  // Advertise a first-order coupon only when the database returned an approved,
+  // in-window promotion. There is no hardcoded offer copy.
+  const activeOffers = offers.data?.offers || [];
+  const firstOrderOffer =
+    activeOffers.find((offer) => offer.firstOrderOnly) ||
+    activeOffers.find((offer) => offer.perUserLimit === 1) ||
+    null;
+
+  const describeOffer = (offer: any) => {
+    if (offer.type === 'PERCENT') {
+      return `${offer.value}% off${
+        offer.maxDiscountPaise
+          ? ` up to ₹${(offer.maxDiscountPaise / 100).toFixed(0)}`
+          : ''
+      }`;
+    }
+    if (offer.type === 'FLAT') {
+      return `₹${(offer.value / 100).toFixed(0)} off`;
+    }
+    if (offer.type === 'FREE_DELIVERY') return 'free delivery';
+    return 'a discount';
+  };
+
+  const buyMembership = async (
+    plan: MembershipPlan,
+    method: 'WALLET' | 'RAZORPAY',
+  ) => {
+    setPurchasingPlanId(plan.id);
+    setPurchaseMethod(method);
+    setPurchaseError(null);
+    setPurchaseNotice(null);
+
+    try {
+      const purchase = await api.membership.purchase({
+        planId: plan.id,
+        paymentMethod: method,
+        idempotencyKey: newIdempotencyKey(),
+      });
+
+      if (method === 'RAZORPAY') {
+        if (!purchase?.razorpay?.orderId || !purchase?.razorpay?.key) {
+          throw new Error('The payment gateway is not configured.');
+        }
+
+        await loadRazorpay();
+        const payment = await openRazorpay({
+          key: purchase.razorpay.key,
+          amount: purchase.razorpay.amount,
+          currency: purchase.razorpay.currency,
+          orderId: purchase.razorpay.orderId,
+          name: 'CraveOS Membership',
+          description: plan.name,
+          prefill: {
+            name: user.name,
+            email: user.email,
+            contact: user.phone,
+          },
+        });
+
+        await api.membership.verifyPurchase(payment);
+      }
+
+      // Read the new state from the server instead of guessing locally.
+      const me = await api.getMe();
+      refreshUser(me.user);
+      await membership.reload();
+      await wallet.reload();
+
+      setPurchaseNotice(
+        method === 'WALLET'
+          ? `${plan.name} is active. The price was paid from your wallet.`
+          : `${plan.name} is active.`,
+      );
+    } catch (err: any) {
+      setPurchaseError(err?.message || 'Could not complete this purchase.');
+    } finally {
+      setPurchasingPlanId(null);
+      setPurchaseMethod(null);
+    }
+  };
+
+  const copyReferralCode = async () => {
+    if (!referralData?.code) return;
+    try {
+      await navigator.clipboard.writeText(referralData.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard permission denied — the code is still visible to copy by hand.
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -130,8 +349,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
 
           <p className="text-xs text-gray-500 dark:text-slate-400">
-            Wallet credits can be applied at checkout. The balance above is read
-            from your account, not estimated.
+            Wallet credits can be applied at checkout or used to buy a
+            membership. The balance above is read from your account, not
+            estimated.
           </p>
 
           {wallet.loading && (
@@ -172,6 +392,147 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               })}
             </div>
           )}
+        </div>
+
+        <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
+          <div className="flex items-center gap-2">
+            <BadgeCheck className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+            <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+              Membership
+            </h3>
+          </div>
+
+          {membership.loading && (
+            <div className="h-16 rounded-xl bg-gray-100 dark:bg-slate-700 animate-pulse" />
+          )}
+
+          {membership.error && (
+            <ErrorState
+              title="Could not load your membership"
+              message={membership.error}
+              onRetry={() => void membership.reload()}
+            />
+          )}
+
+          {!membership.loading && !membership.error && currentMembership && (
+            <div className="p-3 rounded-2xl bg-gray-50 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700 space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-gray-900 dark:text-white">
+                  {currentMembership.planName}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded-lg text-[9px] font-black ${
+                    currentMembership.isActive
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                      : 'bg-gray-200 text-gray-600 dark:bg-slate-800 dark:text-slate-300'
+                  }`}
+                >
+                  {currentMembership.isActive ? currentMembership.status : 'EXPIRED'}
+                </span>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                {currentMembership.isActive
+                  ? `${daysRemaining(currentMembership.endsAt)} day(s) left · ends ${formatDate(currentMembership.endsAt)}`
+                  : `Ended ${formatDate(currentMembership.endsAt)}`}
+              </p>
+            </div>
+          )}
+
+          {!membership.loading && !membership.error && !currentMembership && (
+            <p className="text-xs text-gray-500 dark:text-slate-400">
+              No membership on this account.
+            </p>
+          )}
+
+          {purchaseNotice && (
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+              {purchaseNotice}
+            </div>
+          )}
+
+          {purchaseError && (
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs font-bold text-rose-700 dark:text-rose-300">
+              {purchaseError}
+            </div>
+          )}
+
+          {plans.error && (
+            <ErrorState
+              title="Could not load membership plans"
+              message={plans.error}
+              onRetry={() => void plans.reload()}
+            />
+          )}
+
+          {!plans.loading && !plans.error && (
+            <div className="space-y-3">
+              {purchasablePlans.map((plan) => {
+                const walletTooLow = balance * 100 < plan.priceInPaise;
+                const busy = purchasingPlanId === plan.id;
+
+                return (
+                  <div
+                    key={plan.id}
+                    className="p-3 rounded-2xl border border-gray-200 dark:border-slate-700 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-extrabold text-gray-900 dark:text-white">
+                          {plan.name}
+                        </p>
+                        <p className="text-[10px] text-gray-400">
+                          {plan.durationDays} days · ₹
+                          {plan.monthlyEquivalentRupees.toFixed(0)}/month
+                        </p>
+                      </div>
+                      <span className="text-sm font-black text-gray-900 dark:text-white">
+                        ₹{plan.priceRupees.toFixed(0)}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => buyMembership(plan, 'WALLET')}
+                        disabled={busy || walletTooLow}
+                        title={
+                          walletTooLow
+                            ? 'Wallet balance does not cover this plan'
+                            : undefined
+                        }
+                        className="px-3 py-1.5 rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 text-[10px] font-extrabold disabled:opacity-40"
+                      >
+                        {busy && purchaseMethod === 'WALLET'
+                          ? 'Paying…'
+                          : 'Pay with wallet'}
+                      </button>
+                      <button
+                        onClick={() => buyMembership(plan, 'RAZORPAY')}
+                        disabled={busy}
+                        className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-extrabold disabled:opacity-40"
+                      >
+                        {busy && purchaseMethod === 'RAZORPAY'
+                          ? 'Opening…'
+                          : 'Pay online'}
+                      </button>
+                    </div>
+
+                    {walletTooLow && (
+                      <p className="text-[10px] text-gray-400">
+                        Wallet has ₹{balance.toFixed(2)} — not enough for this
+                        plan.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p className="text-[10px] text-gray-400">
+            Buying a paid plan while your trial is active starts the paid plan
+            immediately; the remaining trial days are forfeited. Renewals extend
+            from the current paid expiry. There is no auto-renewal.
+          </p>
         </div>
 
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
@@ -231,6 +592,111 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
+          <div className="flex items-center gap-2">
+            <Gift className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+            <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+              Refer a friend
+            </h3>
+          </div>
+
+          {referrals.loading && (
+            <div className="h-16 rounded-xl bg-gray-100 dark:bg-slate-700 animate-pulse" />
+          )}
+
+          {referrals.error && (
+            <ErrorState
+              title="Could not load referrals"
+              message={referrals.error}
+              onRetry={() => void referrals.reload()}
+            />
+          )}
+
+          {!referrals.loading && !referrals.error && referralData && (
+            <>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 px-3 py-2 rounded-xl bg-gray-100 dark:bg-slate-900 text-xs font-black tracking-wider text-gray-900 dark:text-white">
+                  {referralData.code}
+                </code>
+                <button
+                  onClick={copyReferralCode}
+                  className="p-2 rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900"
+                  title="Copy referral code"
+                >
+                  {copied ? (
+                    <Check className="w-4 h-4" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+
+              <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                You get ₹{referralData.reward.referrerPaise / 100} and your
+                friend gets ₹{referralData.reward.refereePaise / 100} in wallet
+                credit after their first delivered order. You can be rewarded
+                for up to {referralData.reward.maxRewardedReferrals} referrals.
+              </p>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                  ['Invited', referralData.stats.total],
+                  ['Pending', referralData.stats.pending],
+                  ['Rewarded', referralData.stats.rewarded],
+                ].map(([label, value]) => (
+                  <div
+                    key={String(label)}
+                    className="p-2 rounded-xl bg-gray-50 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700"
+                  >
+                    <div className="text-[9px] font-black uppercase tracking-wider text-gray-400">
+                      {label}
+                    </div>
+                    <div className="text-sm font-black text-gray-900 dark:text-white">
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                Earned so far: ₹{referralData.reward.earnedPaise / 100}
+              </p>
+
+              {referralData.referrals.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-slate-700">
+                  {referralData.referrals.slice(0, 5).map((referral) => (
+                    <div
+                      key={referral.id}
+                      className="flex items-center justify-between gap-2 text-[11px]"
+                    >
+                      <span className="text-gray-600 dark:text-slate-300 truncate">
+                        {referral.referee.email || referral.referee.name || 'Invited friend'}
+                      </span>
+                      <span className="text-gray-400 shrink-0">
+                        {REFERRAL_STATUS_LABELS[referral.status] || referral.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {!hasOrders && !orders.loading && firstOrderOffer && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-[11px] font-bold text-amber-800 dark:text-amber-300">
+              First order: use{' '}
+              <span className="font-black">{firstOrderOffer.code}</span> for{' '}
+              {describeOffer(firstOrderOffer)}
+              {firstOrderOffer.minOrderPaise > 0
+                ? ` on orders above ₹${(
+                    firstOrderOffer.minOrderPaise / 100
+                  ).toFixed(0)}`
+                : ''}
+              . One use per customer.
             </div>
           )}
         </div>

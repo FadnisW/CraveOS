@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { ReferralsService } from '../referrals/referrals.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 @Injectable()
@@ -17,6 +18,7 @@ export class LogisticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly websocketsGateway: OrderTrackingGateway,
+    private readonly referralsService: ReferralsService,
   ) {}
 
   /**
@@ -546,6 +548,19 @@ export class LogisticsService {
     const distanceFee = Math.floor(distanceKm * 800); // ₹8/km
 
     const updatedTrip = await this.prisma.$transaction(async (tx) => {
+      // The status check above happens before the transaction. Lock the trip so
+      // two concurrent OTP submissions cannot both pay rider earnings.
+      await tx.$executeRaw`SELECT "id" FROM "delivery_trips" WHERE "id" = ${tripId} FOR UPDATE`;
+      const freshTrip = await tx.deliveryTrip.findUnique({
+        where: { id: tripId },
+        select: { status: true },
+      });
+      if (!freshTrip || freshTrip.status !== 'ARRIVING') {
+        throw new ConflictException(
+          `Trip ${tripId} cannot be delivered from status ${freshTrip?.status ?? 'missing'}`,
+        );
+      }
+
       await tx.order.update({
         where: { id: trip.orderId },
         data: { status: 'DELIVERED' },
@@ -577,6 +592,15 @@ export class LogisticsService {
           },
         ],
       });
+
+      // A referral is only worth money once the invited customer's first order
+      // is actually delivered. This runs in the same transaction as delivery,
+      // so a rolled-back delivery cannot pay anybody.
+      await this.referralsService.qualifyReferral(
+        tx,
+        trip.order.userId,
+        trip.orderId,
+      );
 
       return deliveredTrip;
     });

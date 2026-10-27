@@ -12,13 +12,17 @@ import {
 import { Request } from 'express';
 import * as crypto from 'crypto';
 import { PaymentsService } from './payments.service';
+import { MembershipService } from '../membership/membership.service';
 import { Public } from '../../common/decorators/public.decorator';
 
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly membershipService: MembershipService,
+  ) {}
 
   @Post('razorpay')
   @Public()
@@ -72,17 +76,38 @@ export class WebhooksController {
         paymentEntity?.currency,
       );
 
-      if (!result) {
+      if (result) {
+        if ((result as any).rejected) {
+          return { status: 'ignored', reason: (result as any).reason };
+        }
+
+        return {
+          status: result.alreadyProcessed ? 'already_processed' : 'ok',
+          orderId: result.orderId,
+        };
+      }
+
+      // Not an order payment. Try a membership purchase before giving up.
+      const membershipResult = await this.membershipService.markPurchaseSuccess(
+        gatewayOrderId,
+        paymentEntity?.id,
+        typeof paymentEntity?.amount === 'number' ? paymentEntity.amount : undefined,
+        paymentEntity?.currency,
+      );
+
+      if (!membershipResult) {
         return { status: 'ignored', reason: 'Unknown gateway order' };
       }
 
-      if ((result as any).rejected) {
-        return { status: 'ignored', reason: (result as any).reason };
+      if ((membershipResult as any).rejected) {
+        return { status: 'ignored', reason: (membershipResult as any).reason };
       }
 
       return {
-        status: result.alreadyProcessed ? 'already_processed' : 'ok',
-        orderId: result.orderId,
+        status: membershipResult.alreadyProcessed
+          ? 'already_processed'
+          : 'ok',
+        membershipPurchaseId: membershipResult.purchaseId,
       };
     }
 
@@ -92,6 +117,10 @@ export class WebhooksController {
 
       if (gatewayOrderId) {
         await this.paymentsService.markPaymentFailed(
+          gatewayOrderId,
+          paymentEntity?.error_description,
+        );
+        await this.membershipService.markPurchaseFailed(
           gatewayOrderId,
           paymentEntity?.error_description,
         );

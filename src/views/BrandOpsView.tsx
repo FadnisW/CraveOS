@@ -76,10 +76,18 @@ export const BrandOpsView: React.FC = () => {
   const [bulkPct, setBulkPct] = useState<string>('');
   const [bulkBusy, setBulkBusy] = useState<boolean>(false);
 
-  const [promoType, setPromoType] = useState<'HAPPY_HOUR' | 'MEAL_OF_DAY' | 'BOGO' | 'COUPON'>(
-    'HAPPY_HOUR',
-  );
-  const [promoDiscount, setPromoDiscount] = useState<string>('15');
+  const [promoCode, setPromoCode] = useState<string>('');
+  const [promoName, setPromoName] = useState<string>('');
+  const [promoType, setPromoType] = useState<
+    'PERCENT' | 'FLAT' | 'FREE_DELIVERY'
+  >('PERCENT');
+  const [promoValue, setPromoValue] = useState<string>('15');
+  const [promoMinOrder, setPromoMinOrder] = useState<string>('0');
+  const [promoMaxDiscount, setPromoMaxDiscount] = useState<string>('');
+  const [promoPerUserLimit, setPromoPerUserLimit] = useState<string>('1');
+  const [promoTotalLimit, setPromoTotalLimit] = useState<string>('');
+  const [promoFirstOrderOnly, setPromoFirstOrderOnly] =
+    useState<boolean>(false);
   const [promoStart, setPromoStart] = useState<string>('');
   const [promoEnd, setPromoEnd] = useState<string>('');
   const [promoBusy, setPromoBusy] = useState<boolean>(false);
@@ -274,8 +282,43 @@ export const BrandOpsView: React.FC = () => {
   const proposePromotion = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!brandId) return;
+    if (!promoCode.trim() || !promoName.trim()) {
+      setError('A promotion needs a code and a customer-facing name.');
+      return;
+    }
     if (!promoStart || !promoEnd) {
       setError('Choose a start and end date for the promotion.');
+      return;
+    }
+
+    const numericValue = Number(promoValue);
+    if (!Number.isFinite(numericValue) || numericValue < 0) {
+      setError('Enter a valid discount value.');
+      return;
+    }
+
+    // The API stores money in paise and percentages as whole numbers.
+    const value =
+      promoType === 'PERCENT'
+        ? Math.round(numericValue)
+        : promoType === 'FLAT'
+          ? Math.round(numericValue * 100)
+          : 0;
+
+    const minOrderPaise = Math.round(Number(promoMinOrder || 0) * 100);
+    const maxDiscountPaise = promoMaxDiscount.trim()
+      ? Math.round(Number(promoMaxDiscount) * 100)
+      : null;
+
+    if (!Number.isFinite(minOrderPaise) || minOrderPaise < 0) {
+      setError('Minimum order must be a non-negative amount.');
+      return;
+    }
+    if (
+      maxDiscountPaise !== null &&
+      (!Number.isFinite(maxDiscountPaise) || maxDiscountPaise <= 0)
+    ) {
+      setError('Maximum discount must be a positive amount, or left blank.');
       return;
     }
 
@@ -284,14 +327,28 @@ export const BrandOpsView: React.FC = () => {
     setMessage(null);
     try {
       await api.brandOps.proposePromotion(brandId, {
+        code: promoCode.trim().toUpperCase(),
+        name: promoName.trim(),
         type: promoType,
+        value,
+        minOrderPaise,
+        maxDiscountPaise,
         startsAt: new Date(promoStart).toISOString(),
         endsAt: new Date(promoEnd).toISOString(),
-        config: { discountPct: Number(promoDiscount) || 0, minOrderPaise: 0 },
+        perUserLimit: Math.max(1, Number(promoPerUserLimit) || 1),
+        totalUsageLimit: promoTotalLimit.trim()
+          ? Math.max(1, Number(promoTotalLimit) || 1)
+          : null,
+        firstOrderOnly: promoFirstOrderOnly,
       });
       setMessage('Promotion submitted for marketing approval.');
+      setPromoCode('');
+      setPromoName('');
       setPromoStart('');
       setPromoEnd('');
+      setPromoMaxDiscount('');
+      setPromoTotalLimit('');
+      setPromoFirstOrderOnly(false);
       setTimeout(() => setMessage(null), 4000);
     } catch (err: any) {
       setError(err?.message || 'Could not submit this promotion.');
@@ -671,29 +728,129 @@ export const BrandOpsView: React.FC = () => {
                       Proposals are invisible to customers until a marketing admin approves them.
                     </p>
 
-                    <Field label="Promotion type">
-                      <select
-                        value={promoType}
-                        onChange={(event) => setPromoType(event.target.value as any)}
-                        className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white"
-                      >
-                        <option value="HAPPY_HOUR">Happy Hour</option>
-                        <option value="MEAL_OF_DAY">Meal of the Day</option>
-                        <option value="BOGO">Buy One Get One</option>
-                        <option value="COUPON">Coupon</option>
-                      </select>
+                    <Field label="Promotion code">
+                      <input
+                        required
+                        value={promoCode}
+                        onChange={(event) =>
+                          setPromoCode(event.target.value.toUpperCase())
+                        }
+                        placeholder="SAVE100"
+                        className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold tracking-wide text-gray-900 dark:text-white"
+                      />
                     </Field>
 
-                    <Field label="Discount %">
+                    <Field label="Customer-facing name">
                       <input
-                        type="number"
-                        min="0"
-                        max="90"
-                        value={promoDiscount}
-                        onChange={(event) => setPromoDiscount(event.target.value)}
+                        required
+                        value={promoName}
+                        onChange={(event) => setPromoName(event.target.value)}
+                        placeholder="₹100 off ₹499"
                         className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
                       />
                     </Field>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Type">
+                        <select
+                          value={promoType}
+                          onChange={(event) =>
+                            setPromoType(event.target.value as any)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white"
+                        >
+                          <option value="PERCENT">Percent off</option>
+                          <option value="FLAT">Flat ₹ off</option>
+                          <option value="FREE_DELIVERY">Free delivery</option>
+                        </select>
+                      </Field>
+
+                      <Field
+                        label={
+                          promoType === 'PERCENT'
+                            ? 'Discount %'
+                            : promoType === 'FLAT'
+                              ? 'Discount ₹'
+                              : 'Value'
+                        }
+                      >
+                        <input
+                          type="number"
+                          min="0"
+                          max={promoType === 'PERCENT' ? '100' : undefined}
+                          disabled={promoType === 'FREE_DELIVERY'}
+                          value={
+                            promoType === 'FREE_DELIVERY' ? '0' : promoValue
+                          }
+                          onChange={(event) =>
+                            setPromoValue(event.target.value)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white disabled:opacity-50"
+                        />
+                      </Field>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Minimum order ₹">
+                        <input
+                          type="number"
+                          min="0"
+                          value={promoMinOrder}
+                          onChange={(event) =>
+                            setPromoMinOrder(event.target.value)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                        />
+                      </Field>
+                      <Field label="Max discount ₹ (optional)">
+                        <input
+                          type="number"
+                          min="0"
+                          value={promoMaxDiscount}
+                          onChange={(event) =>
+                            setPromoMaxDiscount(event.target.value)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                        />
+                      </Field>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Uses per customer">
+                        <input
+                          type="number"
+                          min="1"
+                          value={promoPerUserLimit}
+                          onChange={(event) =>
+                            setPromoPerUserLimit(event.target.value)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                        />
+                      </Field>
+                      <Field label="Total uses (optional)">
+                        <input
+                          type="number"
+                          min="1"
+                          value={promoTotalLimit}
+                          onChange={(event) =>
+                            setPromoTotalLimit(event.target.value)
+                          }
+                          placeholder="Unlimited"
+                          className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs text-gray-900 dark:text-white"
+                        />
+                      </Field>
+                    </div>
+
+                    <label className="flex items-center gap-2 text-[11px] font-bold text-gray-600 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={promoFirstOrderOnly}
+                        onChange={(event) =>
+                          setPromoFirstOrderOnly(event.target.checked)
+                        }
+                      />
+                      First order only
+                    </label>
 
                     <div className="grid grid-cols-2 gap-2">
                       <Field label="Starts at">

@@ -39,11 +39,18 @@ export const api = {
       body: JSON.stringify({ email }),
     }),
 
-  verifyOtp: (email: string, code: string) =>
+  verifyOtp: (email: string, code: string, referralCode?: string) =>
     apiRequest('/auth/verify-otp', {
       method: 'POST',
-      body: JSON.stringify({ email, code }),
+      body: JSON.stringify({
+        email,
+        code,
+        referralCode: referralCode?.trim() || undefined,
+      }),
     }),
+
+  /** The signed-in account with membership, wallet and addresses. */
+  getMe: () => apiRequest('/auth/me'),
 
   // Catalog
   getBrands: () => apiRequest('/catalog/brands'),
@@ -62,33 +69,53 @@ export const api = {
     }),
 
   // Pricing
-  calculatePrice: (
-    items: any[],
-    isMember: boolean,
-    couponCode?: string,
-    useWalletBalance?: number,
-    userId?: string,
-  ) =>
-    apiRequest('/pricing/calculate', {
-      method: 'POST',
-      body: JSON.stringify({ items, isMember, couponCode, useWalletBalance, userId }),
-    }),
   /**
-   * Server-side quote used by checkout. Sending the userId lets the server
-   * verify membership and cap the wallet contribution at the stored balance.
+   * Server-authoritative cart quote.
+   *
+   * The client sends menu item ids and quantities. Membership, promotions,
+   * fees, GST and the wallet cap are all resolved from the database.
    */
   quoteOrder: (payload: {
-    userId?: string;
-    items: { price: number; memberPrice?: number; quantity: number }[];
+    addressId?: string;
+    hubId?: string;
+    items: { menuItemId: string; quantity: number }[];
     couponCode?: string;
-    useWalletBalance?: number;
-    isMember?: boolean;
+    useWalletBalancePaise?: number;
   }) =>
-    apiRequest('/pricing/calculate', {
+    apiRequest('/pricing/quote', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   getActiveOffers: () => apiRequest('/pricing/offers/active'),
+
+  // Membership
+  membership: {
+    /** Public: purchasable plans (the free trial is granted at signup). */
+    getPlans: () => apiRequest('/membership/plans'),
+    getMine: () => apiRequest('/membership/me'),
+    purchase: (payload: {
+      planId?: string;
+      planSlug?: string;
+      paymentMethod: 'WALLET' | 'RAZORPAY';
+      idempotencyKey?: string;
+    }) =>
+      apiRequest('/membership/purchase', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    verifyPurchase: (payload: {
+      razorpay_order_id: string;
+      razorpay_payment_id: string;
+      razorpay_signature: string;
+    }) =>
+      apiRequest('/membership/purchase/verify', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+  },
+
+  // Referrals
+  getMyReferrals: () => apiRequest('/referrals/me'),
 
   // Orders
   /**
@@ -371,6 +398,28 @@ export const api = {
       apiRequest(`/admin/promotions/${id}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status }),
+      }),
+    /** Marketing: create an approved promotion (or a draft/proposal). */
+    createPromotion: (data: {
+      code: string;
+      name: string;
+      description?: string;
+      type: 'PERCENT' | 'FLAT' | 'FREE_DELIVERY';
+      value: number;
+      minOrderPaise?: number;
+      maxDiscountPaise?: number | null;
+      brandId?: string | null;
+      hubId?: string | null;
+      startsAt: string;
+      endsAt: string;
+      status?: 'DRAFT' | 'APPROVED' | 'PENDING_APPROVAL';
+      totalUsageLimit?: number | null;
+      perUserLimit?: number;
+      firstOrderOnly?: boolean;
+    }) =>
+      apiRequest('/admin/promotions', {
+        method: 'POST',
+        body: JSON.stringify(data),
       }),
   },
 

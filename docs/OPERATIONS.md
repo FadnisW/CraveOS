@@ -137,6 +137,28 @@ the first failed migration.
 - [ ] Indexes on foreign keys and hot query paths are present.
 - [ ] A backup exists before the deploy.
 
+### Phase 2 money migrations
+
+Two committed migrations carry the money engine:
+
+| Migration | What it changes |
+| --- | --- |
+| `20261027130000_phase2_money_engine` | Adds `Promotion`, `PromotionRedemption`, `MembershipPlan`, `MembershipPurchase`, `Referral`; backfills every existing membership to `plan-trial` with an `endsAt`; drops `PricingRule`; copies non-smoke legacy rules into `Promotion`. |
+| `20261027140000_phase2_launch_config` | Makes `users.phone` nullable; adds wallet ledger references and membership-purchase idempotency; inserts the launch plans and the `WELCOME100`, `EATCLUB100`, `CRAVE50` promotions. |
+
+Both were applied to a fresh database and to a clone of the development
+database before touching the shared development database. The clone check is:
+
+```bash
+createdb craveos_phase2_check
+DATABASE_URL="postgresql://localhost/craveos_phase2_check" npx prisma migrate deploy
+DATABASE_URL="postgresql://localhost/craveos_phase2_check" npx prisma migrate status
+```
+
+The backfill is one-way: existing memberships lose any trial/renewal distinction
+and keep a single `endsAt`. Do not re-run the migration against a database where
+`PricingRule` still has data without a backup.
+
 ## 3. Backups
 
 PostgreSQL is the only durable store. Back up the whole database, not selected
@@ -257,6 +279,11 @@ automatic down migration.
 - [ ] `/api/v1/health` returns `200` with both checks `up`.
 - [ ] One real low-value order completes: quote, payment, kitchen ticket,
       dispatch, delivery OTP.
+- [ ] A membership purchase completes with wallet and with Razorpay test mode,
+      and the member quote is cheaper than the guest quote.
+- [ ] A referral code is applied at signup and both wallets are credited only
+      after the referee's first delivered order.
+- [ ] Every advertised coupon is an `APPROVED` `Promotion` inside its window.
 - [ ] The previous build artifact is available for rollback.
 
 ## 7. Secret rotation
@@ -288,3 +315,134 @@ before launch:
 - A real rider notification channel. Rider OTP requests return `503` outside
   the development bypass until that channel exists.
 - Automated restore drills. The procedure above is manual and must be recorded.
+
+## 9. Money operations
+
+The API is the only writer of money. Storefront totals are display-only and are
+replaced by the server quote before an order is placed.
+
+### Quote contract
+
+`POST /pricing/quote` requires a customer session and either an `addressId` or a
+`hubId`. It accepts `items: [{ menuItemId, quantity }]`, an optional
+`couponCode`, and an optional `useWalletBalancePaise`. The server resolves:
+
+1. the active membership and its member prices;
+2. the delivery and packaging fees (zero for an active member);
+3. the approved promotion inside its window, minimum order and usage limits;
+4. 5% GST on food and packaging and 18% GST on delivery;
+5. the wallet contribution, capped at the stored balance and the payable amount.
+
+The response is in paise with rupee mirrors for the storefront. Never accept a
+client-supplied price. The order transaction calls the same quote again, so a
+stale quote cannot change what is charged.
+
+### Membership
+
+- Plans: `plan-trial` (30 days, granted at signup), `plan-monthly` ₹99,
+  `plan-quarterly` ₹249, `plan-annual` ₹899.
+- Purchase endpoints: `GET /membership/plans`, `GET /membership/me`,
+  `POST /membership/purchase`, `POST /membership/purchase/verify`.
+- A wallet purchase debits `WalletTransaction` in the same transaction that
+  activates the membership. A Razorpay purchase activates only after signature
+  verification or a verified webhook.
+- Buying a paid plan during the trial starts it immediately; the remaining trial
+  days are forfeited. A renewal extends from the current paid expiry. There is no
+  auto-renewal and no stored card.
+- The membership expiry cron marks `ACTIVE`/`TRIAL` rows past `endsAt` as
+  `EXPIRED`; the quote engine also checks `endsAt` on every request.
+
+### Referrals
+
+- Every customer gets a unique `REF-XXXXXXXXXX` code at signup.
+- Attribution happens once, at OTP verification, and only when the referrer has
+  at least one delivered order and is not blocked.
+- The reward is ₹100 to the referrer and ₹50 to the referee, paid inside the
+  delivery transaction for the referee's first delivered order.
+- A referrer is rewarded for at most 20 referrals. Beyond the cap the referee
+  still receives ₹50 and the referrer receives nothing.
+- Cancelled or refunded-before-delivery orders never qualify.
+
+### Promotions
+
+- Only `APPROVED` rows inside `startsAt`/`endsAt` apply. `PENDING_APPROVAL`,
+  `DRAFT`, `REJECTED` and `ARCHIVED` rows are ignored by the quote engine.
+- Every successful use writes a `PromotionRedemption` with the user and order.
+  Per-user and total usage limits are counted from that table inside the order
+  transaction with a row lock.
+- The admin UI can create an approved promotion and review brand proposals.
+  Brand ops can only submit `PENDING_APPROVAL` proposals.
+- Do not advertise a coupon in copy, banners or notifications unless the row is
+  approved and in its window.
+
+### Ledger reconciliation
+
+Run this before a launch and after any refund incident:
+
+```sql
+-- Wallet balance must equal the ledger sum per user.
+SELECT u.id, u."walletBalance",
+       COALESCE(SUM(w."amountInPaise"), 0) AS ledger
+FROM users u
+LEFT JOIN wallet_transactions w ON w."userId" = u.id
+GROUP BY u.id
+HAVING u."walletBalance" <> COALESCE(SUM(w."amountInPaise"), 0);
+```
+
+A non-empty result is a release blocker. Membership purchases must have a
+matching `Payment` or wallet debit, and every `REWARDED` referral must have two
+`REFERRAL_REWARD` wallet rows.
+
+### Money smoke test
+
+`npm run check:money-smoke` drives the complete money path against a running
+development API:
+
+```
+trial signup -> serviceability -> address -> member quote + coupon
+-> wallet top-up -> invalid-coupon rejection -> wallet order -> idempotent retry
+-> coupon reuse rejection -> membership purchase -> idempotent retry
+-> member quote -> expiry enforcement -> referral attribution
+-> kitchen accept/pack -> dispatch -> delivery OTP -> referral reward
+-> replay protection -> ledger reconciliation
+```
+
+Requirements: the API on `http://localhost:4000` (override with
+`SMOKE_BASE_URL`), `NODE_ENV=development` with `DEV_OTP_BYPASS=true`, the
+`craveos-postgres` Docker container, seeded hubs/menu/plans/promotions, and the
+`opsadmin@eatclub.in` operations admin. The script creates two throwaway
+customers and tops up their wallets; it never mutates existing customers. It is
+a manual pre-release check, not part of `npm run verify`, because it needs a
+live API and database.
+
+### Repairing pre-ledger wallet balances
+
+Accounts created before the wallet ledger existed can have a balance with no
+matching `WalletTransaction`. Never edit `walletBalance` directly. Record the
+missing movement so the ledger explains the balance:
+
+```sql
+INSERT INTO wallet_transactions
+  (id, "userId", "amountInPaise", reason, "referenceType", "referenceId", "createdAt")
+SELECT
+  'wt-legacy-backfill-' || u.id,
+  u.id,
+  u."walletBalance" - COALESCE(SUM(w."amountInPaise"), 0),
+  'ADMIN_ADJUSTMENT',
+  'LEGACY_LEDGER_BACKFILL',
+  'pre-phase2-data',
+  now()
+FROM users u
+LEFT JOIN wallet_transactions w ON w."userId" = u.id
+GROUP BY u.id
+HAVING u."walletBalance" <> COALESCE(SUM(w."amountInPaise"), 0)
+   AND NOT EXISTS (
+     SELECT 1 FROM wallet_transactions b
+     WHERE b."referenceType" = 'LEGACY_LEDGER_BACKFILL' AND b."userId" = u.id
+   );
+```
+
+Re-run the reconciliation query afterwards; it must return zero rows. The
+development seed now writes an opening ledger row for a newly created demo
+customer and no longer resets an existing demo wallet on re-seed, so a fresh
+database does not need this repair.

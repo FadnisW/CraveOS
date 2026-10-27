@@ -118,21 +118,31 @@ export type TripStatus =
   | 'STALE'
   | 'CANCELLED';
 
+export type MembershipStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'CANCELLED';
+
+export interface UserMembership {
+  planId: string;
+  planName: string;
+  planSlug: string | null;
+  status: MembershipStatus;
+  startedAt: string;
+  /** Single expiry timestamp. There is no separate trial/renewal date. */
+  endsAt: string;
+  isActive: boolean;
+}
+
 export interface UserProfile {
   id: string;
   name: string;
   email: string;
-  phone: string;
+  /** Customers sign up with email; phone is only stored when supplied. */
+  phone?: string;
   role?: UserRole;
   adminSubRole?: AdminSubRole;
   scopedHubId?: string;
   scopedBrandId?: string;
   isMember: boolean;
-  membershipPlan?: {
-    type: 'trial' | 'quarterly' | 'annual';
-    expiresAt: string;
-    totalSavingsToDate: number;
-  };
+  membership?: UserMembership | null;
   walletBalance: number;
   referralCode: string;
   savedAddresses: SavedAddress[];

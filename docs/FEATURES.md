@@ -39,24 +39,25 @@ mock array is a release blocker.
 | Menu catalogue | LIVE | `src/views/MenuScreen.tsx` | `GET /catalog/items`; `MenuItem` | Manual: items render from API only | Prices in paise from DB |
 | Item search | LIVE | `src/views/SearchScreen.tsx` | `GET /catalog/search?q=`; `MenuItem` | Manual: query returns DB matches | Debounced, abortable |
 | Serviceability lookup | LIVE | `src/views/HomeScreen.tsx`, `SavedAddressModal.tsx` | `POST /catalog/serviceability/resolve`; `Hub.servicePolygon` | Manual: HSR address resolves `hub-hsr-01` | ETA is not advertised until measured |
-| Cart | LIVE | `src/components/CartSidebar.tsx`, `src/context/CartContext.tsx` | Client state only; no DB row until checkout | Manual: add/remove/quantity/persist | Shows MRP only; fees are checkout-time |
-| Checkout quote | LIVE | `src/views/CheckoutScreen.tsx` | `POST /pricing/calculate`; `MenuItem.mrpInPaise`, `PricingRule` | Manual: quote matches order total | Server quote required before placing |
-| Order placement (UPI/CARD) | LIVE | `src/views/CheckoutScreen.tsx` | `POST /orders`, `POST /payments/create-razorpay-order`, `POST /payments/verify`; `Order`, `Payment` | Manual: Razorpay test payment creates paid order | COD removed |
-| Order placement (wallet) | LIVE | `src/views/CheckoutScreen.tsx` | `POST /orders`; `User.walletBalance`, `WalletTransaction` | Manual: wallet debit is atomic and visible | Insufficient balance is rejected |
+| Cart | LIVE | `src/components/CartSidebar.tsx`, `src/context/CartContext.tsx` | Client state only; no DB row until checkout | Manual: add/remove/quantity/persist | Shows MRP only; member price, fees, GST and wallet cap come from the server quote |
+| Checkout quote | LIVE | `src/views/CheckoutScreen.tsx` | `POST /pricing/quote`; `MenuItem`, `Membership`, `Promotion`, `PromotionRedemption`, `User.walletBalance` | Manual: quote matches the order total for the same cart | Requires an authenticated customer and a saved address; amounts are paise |
+| Order placement (UPI/CARD) | LIVE | `src/views/CheckoutScreen.tsx` | `POST /orders`, `POST /payments/create-razorpay-order`, `POST /payments/verify`; `Order`, `Payment`, `PromotionRedemption` | Manual: Razorpay test payment creates paid order | Order total is recomputed inside the order transaction; COD removed |
+| Order placement (wallet) | LIVE | `src/views/CheckoutScreen.tsx` | `POST /orders`; `User.walletBalance`, `WalletTransaction` | Manual: wallet debit is atomic and visible | Wallet may only cover part of a bill; the gateway collects the remainder |
 | Order tracking | LIVE | `src/views/OrdersScreen.tsx` | `GET /orders/:id`, `GET /orders/user/:userId`; Socket.IO | Manual: status changes propagate live | Poll fallback exists |
 | Order cancellation | API | none | `POST /orders/:id/cancel`; `Order`, refund ledger | Manual: cancel before pickup refunds correctly | Automatic cancellation only when a payment modal is dismissed; no customer cancel button yet |
 | Address book | LIVE | `src/components/SavedAddressModal.tsx` | `GET/POST/PATCH/DELETE /addresses`; `Address` | Manual: create, edit, delete, select | |
-| Wallet balance and ledger | LIVE | `src/views/ProfileScreen.tsx` | `GET /payments/wallet/:userId`; `WalletTransaction` | Manual: balance equals ledger sum | |
+| Wallet balance and ledger | LIVE | `src/views/ProfileScreen.tsx` | `GET /payments/wallet/:userId`; `WalletTransaction` | Manual: balance equals ledger sum | Includes order spend/refund, membership purchase and referral reward rows |
 | Customer support ticket creation | API | none | `POST /tickets`, `GET /tickets/user/:userId`; `Ticket` | Manual: API creates and reads a ticket | No customer-facing ticket form yet |
 | Order invoice email | API | `apps/api/src/modules/notifications` | Resend; `Order` | Manual: delivered to `DEV_EMAIL_RECIPIENT` in dev | No UI toggle |
-| Membership free trial (auto-enrol) | API | none | `User.membership`, `Membership`, `MembershipPlan`; `PricingService.verifyMembership` | Manual: new user gets 30-day trial; quote applies member pricing | Not advertised in UI until purchase/renewal ships |
-| Membership purchase and renewal | PLANNED | none | none | none | Phase 2.7 |
-| Referral attribution and reward | PLANNED | none | `User.referralCode` exists but is unused | none | Phase 2.8 |
+| Membership free trial (auto-enrol) | LIVE | `src/views/ProfileScreen.tsx` | `Membership` with `plan-trial`, `startedAt`/`endsAt`; `GET /auth/me`, `GET /membership/me` | Manual: new user gets a 30-day trial; profile shows the plan and expiry | Trial starts at signup; no wallet cash is issued |
+| Membership purchase and renewal | LIVE | `src/views/ProfileScreen.tsx` | `GET /membership/plans`, `GET /membership/me`, `POST /membership/purchase`, `POST /membership/purchase/verify`; `MembershipPlan`, `Membership`, `MembershipPurchase` | Manual: buy with wallet and with Razorpay test mode; expiry extends; renewal extends the current expiry | Buying during trial starts the paid plan immediately and forfeits remaining trial days; no auto-renewal |
+| Membership enforcement | LIVE | `src/views/CheckoutScreen.tsx` | `POST /pricing/quote` reads the active `Membership` row | Manual: member quote uses member prices and zero delivery/packaging; expired membership does not | Membership is evaluated from `endsAt` on every quote |
+| Referral attribution and reward | LIVE | `src/components/AuthModal.tsx`, `src/views/ProfileScreen.tsx` | `POST /auth/verify-otp` accepts `referralCode`; `GET /referrals/me`; `Referral`, `WalletTransaction` | Manual: signup with a code, deliver the first order, both wallets are credited | ₹100 referrer / ₹50 referee; reward only after the referee's first delivered order; 20 rewarded referrals per referrer |
 | Ratings and reviews | PLANNED | none | no `Review` model | none | Ratings are hidden; do not invent them |
-| Deals and promotions page | HIDDEN | none | `PricingRule` (admin-managed) | `GET /pricing/offers/active` returns DB rows only | Re-enable when checkout applies rules |
+| Deals and promotions page | HIDDEN | none | `Promotion`, `PromotionRedemption`; `GET /pricing/offers/active` returns approved in-window rows only | `check-no-fakes` keeps the route hidden | Coupon codes apply at checkout; the customer Deals surface stays hidden until the generic engine is exposed |
 | AI assistant | REMOVED | none | none | `check-no-fakes` | Deleted in Phase 0 |
 | Cash on delivery | REMOVED | none | none | `check-no-fakes` | Deleted in Phase 0 |
-| Guest checkout with email OTP | PLANNED | none | none | none | Phase 2.6 |
+| Checkout sign-in with email OTP | LIVE | `src/components/AuthModal.tsx`, `src/views/CheckoutScreen.tsx` | `POST /auth/request-otp`, `POST /auth/verify-otp`, `POST /orders`; `User`, `Otp` in Redis | Manual: new email verifies an OTP and can place an order | Email-first account creation at checkout; phone is optional and only used as a delivery contact |
 | ONDC integration | PLANNED | none | none | none | Post-v1 |
 
 ## Operator features
@@ -71,7 +72,7 @@ mock array is a release blocker.
 | Brand management | LIVE | `src/views/AdminPlatformView.tsx` | `POST/PATCH /admin/brands`; `Brand` | Manual: create/edit brand | |
 | Rider payouts | LIVE | `src/views/AdminPlatformView.tsx` | `GET/POST /admin/finance/rider-payouts`; `RiderEarning` | Manual: batch payout marks earnings paid | |
 | Audit log | LIVE | `src/views/AdminPlatformView.tsx` | `GET /admin/audit-log`; `AuditLog` | Manual: privileged actions appear | |
-| Promotion administration | LIVE | `src/views/AdminPlatformView.tsx` | `GET /admin/promotions`, `PATCH /admin/promotions/:id/status`; `PricingRule` | Manual: approve/reject brand proposal | Customer application is Phase 2 |
+| Promotion administration | LIVE | `src/views/AdminPlatformView.tsx` | `GET /admin/promotions`, `POST /admin/promotions`, `PATCH /admin/promotions/:id/status`; `Promotion` | Manual: create an approved code, reject a brand proposal, redeem the code at checkout | Only `APPROVED` rows inside their window apply; every redemption writes `PromotionRedemption` |
 | Support ticket desk | LIVE | `src/views/admin/AdminTicketsView.tsx` | `GET /tickets`, `PATCH /tickets/:id/assign`, `PATCH /tickets/:id/status`, `PATCH /tickets/:id/resolve`; `Ticket` | Manual: assign, resolve and close a ticket | Operator-only |
 | Hub operations dashboard | LIVE | `src/views/HubOpsView.tsx` | `GET /hub-ops/:hubId/dashboard` | Manual: scoped to caller's hub | |
 | Stock and 86-ing | LIVE | `src/views/HubOpsView.tsx` | `GET /hub-ops/:hubId/stock`, `PATCH /hub-ops/:hubId/stock/bulk-86`; `MenuItem` | Manual: 86 hides item for that hub | |
@@ -81,6 +82,7 @@ mock array is a release blocker.
 | Rider console | LIVE | `src/views/RiderConsoleView.tsx` | `GET /logistics/trips/rider/:riderId/active`, trip transition endpoints | Manual: accept, pickup, deliver | |
 | Brand operations dashboard | LIVE | `src/views/BrandOpsView.tsx` | `GET /brand-ops/:brandId/dashboard` | Manual: scoped to caller's brand | |
 | Brand menu management | LIVE | `src/views/BrandOpsView.tsx` | `GET/POST/PATCH/DELETE /brand-ops/:brandId/menu/*`; `MenuItem` | Manual: price and availability edits persist | |
+| Brand promotion proposals | LIVE | `src/views/BrandOpsView.tsx` | `POST /brand-ops/:brandId/promotions/propose`; `Promotion` with `PENDING_APPROVAL` | Manual: submit a code, see it in the admin approval queue, approve it, redeem it | Brand ops cannot approve its own proposal |
 | Brand analytics and finance | LIVE | `src/views/BrandOpsView.tsx` | `GET /brand-ops/:brandId/analytics`, `GET /brand-ops/:brandId/finance` | Manual: totals reconcile with orders | |
 
 ## Platform
@@ -99,8 +101,12 @@ verification step.
 
 - `src/data/mockData.ts` and every `MOCK_*` import or fallback.
 - `src/components/AICraveAssistantModal.tsx` and the `@google/genai` dependency.
-- `src/views/MembershipScreen.tsx` and every membership nav entry.
-- The customer Deals route and nav entry (promotion engine is Phase 2).
+- `src/views/MembershipScreen.tsx` and every membership nav entry. Membership is
+  now a real purchase inside `ProfileScreen`.
+- The customer Deals route and nav entry. The `Promotion` engine is live behind
+  checkout coupon codes, but the Deals surface stays hidden until it is exposed.
+- The `PricingRule` model and `POST /pricing/calculate`. Quotes now come from
+  `POST /pricing/quote` and promotions from `Promotion`.
 - Cash-on-delivery as a payment method, API branch, and database value.
 - Hardcoded ratings, review counts, delivery ETAs, savings figures, coupon
   banners, "Happy Hours Live" copy, and prefilled demo credentials.
@@ -126,6 +132,12 @@ The product must not be deployed to customers until all of these are true:
    `JWT_SECRET`, explicit HTTPS origins and `DEV_OTP_BYPASS` off.
 10. `/api/v1/health` returns `200` with PostgreSQL and Redis both `up`, and an
     external uptime monitor polls it.
+11. The money ledger reconciles: wallet balance equals the sum of
+    `WalletTransaction` rows, membership purchases match gateway settlements,
+    referral rewards only exist for delivered orders, and no `WELCOME_BONUS`
+    cash is issued to new accounts.
+12. Every advertised coupon exists as an `APPROVED` `Promotion` inside its
+    window. No offer may be shown from copy alone.
 
 ## How to add a feature
 

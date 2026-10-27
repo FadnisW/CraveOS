@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
@@ -404,24 +409,57 @@ export class BrandOpsService {
 
   /**
    * Propose Promotion (§5.2)
-   * Submits a promotion proposal to Super Admin approval queue
+   * Submits a promotion proposal to the marketing approval queue.
    */
   async proposePromotion(
     brandId: string,
     data: {
-      type: 'HAPPY_HOUR' | 'MEAL_OF_DAY' | 'BOGO' | 'COUPON';
+      code: string;
+      name: string;
+      description?: string;
+      type: 'PERCENT' | 'FLAT' | 'FREE_DELIVERY';
+      value: number;
+      minOrderPaise?: number;
+      maxDiscountPaise?: number | null;
       startsAt: string;
       endsAt: string;
-      config: any;
+      perUserLimit?: number;
+      totalUsageLimit?: number | null;
+      firstOrderOnly?: boolean;
     },
+    actorId?: string,
   ) {
-    const validTypes = ['HAPPY_HOUR', 'MEAL_OF_DAY', 'BOGO', 'COUPON'];
-    if (!validTypes.includes(data?.type)) {
-      throw new BadRequestException(`type must be one of ${validTypes.join(', ')}`);
-    }
-
     const brand = await this.prisma.brand.findUnique({ where: { id: brandId } });
     if (!brand) throw new NotFoundException(`Brand '${brandId}' not found`);
+
+    const code = String(data?.code || '').trim().toUpperCase();
+    const name = String(data?.name || '').trim();
+    const type = String(data?.type || '').trim().toUpperCase();
+
+    if (!/^[A-Z0-9][A-Z0-9_-]{2,31}$/.test(code)) {
+      throw new BadRequestException(
+        'code must be 3-32 characters: letters, numbers, underscore or hyphen',
+      );
+    }
+    if (!name) {
+      throw new BadRequestException('name is required');
+    }
+    if (!['PERCENT', 'FLAT', 'FREE_DELIVERY'].includes(type)) {
+      throw new BadRequestException(
+        'type must be PERCENT, FLAT or FREE_DELIVERY',
+      );
+    }
+
+    const value = Number(data?.value);
+    if (type === 'PERCENT' && (!Number.isInteger(value) || value < 1 || value > 100)) {
+      throw new BadRequestException('PERCENT value must be a whole number from 1 to 100');
+    }
+    if (type === 'FLAT' && (!Number.isInteger(value) || value <= 0)) {
+      throw new BadRequestException('FLAT value must be a positive whole number of paise');
+    }
+    if (type === 'FREE_DELIVERY' && value !== 0) {
+      throw new BadRequestException('FREE_DELIVERY value must be 0');
+    }
 
     const startsAt = new Date(data?.startsAt);
     const endsAt = new Date(data?.endsAt);
@@ -432,20 +470,66 @@ export class BrandOpsService {
       throw new BadRequestException('endsAt must be after startsAt');
     }
 
-    return this.prisma.pricingRule.create({
-      data: {
-        type: data.type,
-        brandId,
-        startsAt,
-        endsAt,
-        config: {
-          ...(data.config || {}),
-          status: 'PENDING_ADMIN_APPROVAL',
-          proposedByBrandId: brandId,
-          proposedAt: new Date(),
+    const minOrderPaise = Number(data?.minOrderPaise ?? 0);
+    if (!Number.isInteger(minOrderPaise) || minOrderPaise < 0) {
+      throw new BadRequestException('minOrderPaise must be a non-negative whole number');
+    }
+
+    const maxDiscountPaise =
+      data?.maxDiscountPaise === null || data?.maxDiscountPaise === undefined
+        ? null
+        : Number(data.maxDiscountPaise);
+    if (
+      maxDiscountPaise !== null &&
+      (!Number.isInteger(maxDiscountPaise) || maxDiscountPaise <= 0)
+    ) {
+      throw new BadRequestException(
+        'maxDiscountPaise must be a positive whole number of paise',
+      );
+    }
+
+    const perUserLimit = Number(data?.perUserLimit ?? 1);
+    if (!Number.isInteger(perUserLimit) || perUserLimit < 1) {
+      throw new BadRequestException('perUserLimit must be at least 1');
+    }
+
+    const totalUsageLimit =
+      data?.totalUsageLimit === null || data?.totalUsageLimit === undefined
+        ? null
+        : Number(data.totalUsageLimit);
+    if (
+      totalUsageLimit !== null &&
+      (!Number.isInteger(totalUsageLimit) || totalUsageLimit < 1)
+    ) {
+      throw new BadRequestException('totalUsageLimit must be at least 1');
+    }
+
+    try {
+      return await this.prisma.promotion.create({
+        data: {
+          code,
+          name,
+          description: data?.description ? String(data.description) : null,
+          type: type as any,
+          value,
+          minOrderPaise,
+          maxDiscountPaise,
+          brandId,
+          startsAt,
+          endsAt,
+          status: 'PENDING_APPROVAL',
+          totalUsageLimit,
+          perUserLimit,
+          firstOrderOnly: !!data?.firstOrderOnly,
+          createdById: actorId || null,
         },
-      },
-    });
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException(`Promotion code '${code}' already exists`);
+      }
+      throw error;
+    }
   }
 
   /**
