@@ -17,7 +17,7 @@ import { motion, AnimatePresence } from 'motion/react';
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (user: any, token: string) => void;
+  onSuccess: (user: any) => void;
 }
 
 type AuthMode = 'EMAIL' | 'RIDER';
@@ -85,11 +85,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     try {
       if (mode === 'RIDER') {
         const res = await api.riders.verifyOtp(phone.trim(), otp.trim());
-        if (res.accessToken) {
-          localStorage.setItem('eatclub_token', res.accessToken);
-          // Rider tokens carry the Rider table id as `sub`; the storefront
-          // user shape needs the role added explicitly.
-          onSuccess({ ...res.rider, role: 'RIDER', email: '' }, res.accessToken);
+        if (res.rider) {
+          // The BFF stored the rider token in an httpOnly cookie; the page only
+          // receives the profile. Rider ids are Rider table ids, so the role is
+          // added explicitly for the storefront user shape.
+          onSuccess({ ...res.rider, role: 'RIDER', email: '' });
           onClose();
         }
         return;
@@ -100,9 +100,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         otp.trim(),
         referralCode.trim() || undefined,
       );
-      if (res.accessToken) {
-        localStorage.setItem('eatclub_token', res.accessToken);
-        onSuccess(res.user, res.accessToken);
+      if (res.user) {
+        onSuccess(res.user);
 
         const submittedCode = referralCode.trim();
         if (submittedCode) {

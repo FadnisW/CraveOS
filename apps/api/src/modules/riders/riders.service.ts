@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import * as crypto from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RiderStatus } from '@prisma/client';
@@ -63,7 +64,7 @@ export class RidersService {
       );
     }
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = crypto.randomInt(100000, 1000000).toString();
     await this.redis.set(this.otpKey(cleanPhone), code, 'EX', RIDER_OTP_TTL_SECONDS);
 
     this.logger.log(
@@ -136,6 +137,7 @@ export class RidersService {
       role: 'RIDER',
       status: rider.status,
       currentHubId: rider.currentHubId,
+      jti: crypto.randomUUID(),
     };
 
     const accessToken = this.jwtService.sign(payload, { expiresIn: '7d' });

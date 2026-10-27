@@ -16,6 +16,7 @@ import {
 import { motion } from 'motion/react';
 import { io } from 'socket.io-client';
 import { api } from '../lib/api-client';
+import { socketBaseUrl } from '../lib/socket';
 import { useUser } from '../context/UserContext';
 import { PromptDialog } from '../components/ui/Dialog';
 
@@ -101,7 +102,7 @@ function elapsedMinutes(createdAt: string, now: number) {
 }
 
 export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }) => {
-  const { user, token } = useUser();
+  const { user } = useUser();
 
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [hubId, setHubId] = useState<string>('');
@@ -181,15 +182,26 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
   // Live ticket board: the kitchen joins the hub KDS room and refreshes when
   // any ticket changes. Polling alone would show stale tickets after a reject.
   useEffect(() => {
-    if (!hubId || !token) return;
+    if (!hubId || !user) return;
 
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000';
+    const socketUrl = socketBaseUrl();
+    if (!socketUrl) {
+      // Without a configured socket origin the board still refreshes on its
+      // polling interval; it must not pretend to be live.
+      return;
+    }
+
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
-      // The gateway authenticates every handshake; an anonymous socket is
-      // disconnected before it can join a hub room.
-      auth: { token },
+      // The gateway requires a short-lived, socket-only ticket. Fetching a
+      // fresh one inside `auth` also covers every reconnect attempt.
+      auth: (cb) => {
+        api
+          .getWsTicket()
+          .then((res) => cb({ token: res.ticket }))
+          .catch(() => cb({}));
+      },
     });
 
     socket.on('connect', () => {
@@ -210,7 +222,7 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
       socket.off('riderPickedUp', refresh);
       socket.disconnect();
     };
-  }, [hubId, token, fetchTickets]);
+  }, [hubId, user?.id, fetchTickets]);
 
   const loadStock = useCallback(async () => {
     if (!hubId) return;

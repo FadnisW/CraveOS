@@ -10,6 +10,7 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { TokenDenylistService } from '../../common/auth/token-denylist.service';
 import { corsOrigins } from '../../common/config/env.validation';
 
 interface SocketUser {
@@ -46,6 +47,7 @@ export class OrderTrackingGateway implements OnGatewayConnection {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly tokenDenylist: TokenDenylistService,
   ) {}
 
   /**
@@ -68,6 +70,17 @@ export class OrderTrackingGateway implements OnGatewayConnection {
       const claims = this.jwtService.verify(rawToken);
       if (!claims?.sub) {
         throw new Error('Malformed authentication token');
+      }
+
+      // Only a short-lived ticket minted by POST /auth/ws-ticket may open a
+      // socket. A full API token is long-lived and would survive a logout for
+      // up to 30 days if it leaked into a handshake log.
+      if (claims.scope !== 'ws') {
+        throw new Error('A WebSocket ticket is required');
+      }
+
+      if (await this.tokenDenylist.isRevoked(claims.jti)) {
+        throw new Error('This session has been signed out');
       }
 
       // Resolve the live identity from the database instead of trusting the

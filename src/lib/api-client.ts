@@ -1,23 +1,25 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+/**
+ * Browser transport.
+ *
+ * Requests go to the same-origin BFF (`/api/bff`), never to the NestJS API.
+ * The session lives in an httpOnly cookie that JavaScript cannot read, so
+ * there is no token in localStorage and no Authorization header here.
+ */
+const API_BASE = '/api/bff';
 
 export async function apiRequest<T = any>(
   endpoint: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('eatclub_token') : null;
-
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
+    credentials: 'same-origin',
   });
 
   if (!response.ok) {
@@ -25,7 +27,21 @@ export async function apiRequest<T = any>(
     const err: any = new Error(errorData.message || `API Request failed with status ${response.status}`);
     err.status = response.status;
     err.errorData = errorData;
+
+    if (
+      response.status === 401 &&
+      typeof window !== 'undefined'
+    ) {
+      // Let the session provider clear stale local state without coupling the
+      // transport to React.
+      window.dispatchEvent(new Event('craveos:session-expired'));
+    }
+
     throw err;
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   return response.json();
@@ -47,6 +63,21 @@ export const api = {
         code,
         referralCode: referralCode?.trim() || undefined,
       }),
+    }),
+
+  /** Anonymous-safe hydration: `{ authenticated, role, user }`, never a 401. */
+  getSession: () => apiRequest('/auth/session'),
+
+  /** Revokes the token id server-side and clears the httpOnly cookie. */
+  logout: () =>
+    apiRequest('/auth/logout', {
+      method: 'POST',
+    }),
+
+  /** 60-second, socket-only ticket. Never accepted on HTTP routes. */
+  getWsTicket: () =>
+    apiRequest<{ ticket: string; expiresIn: number }>('/auth/ws-ticket', {
+      method: 'POST',
     }),
 
   /** The signed-in account with membership, wallet and addresses. */

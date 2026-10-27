@@ -55,6 +55,34 @@ Example:
 Point the uptime monitor at this endpoint. Do not use `/` or a static page as a
 health signal; neither proves the database or Redis is reachable.
 
+### Browser session transport
+
+The storefront never holds an access token in JavaScript.
+
+| Piece | Contract |
+| --- | --- |
+| BFF | `app/api/bff/[...path]/route.ts` is the only browser-facing data path. It allows a fixed list of API roots, checks the request origin for `POST`/`PUT`/`PATCH`/`DELETE`, attaches the cookie as `Authorization: Bearer`, and strips `accessToken` from auth responses. |
+| Cookie | `eatclub_session` in development; `__Host-eatclub_session` in production. `httpOnly`, `SameSite=Lax`, `Path=/`, `Secure` in production, lifetime capped at the token's `exp` (30 days). |
+| Hydration | `GET /api/bff/auth/session` returns `{ authenticated, role, user }`. Anonymous requests get `200` with `authenticated: false`, never a 401. |
+| Sign-out | `POST /api/bff/auth/logout` calls `POST /auth/logout`, which writes `jwt:revoked:<jti>` to Redis with a TTL equal to the token's remaining life. The BFF clears the cookie only after the API confirms revocation. Redis failure fails closed. |
+| Live socket | `POST /api/bff/auth/ws-ticket` mints a 60-second JWT with `scope: 'ws'`. The Socket.IO client fetches a fresh ticket for every handshake and reconnect. `RolesGuard` rejects `scope: 'ws'` on HTTP routes. |
+| OTP limits | Per email: 5 requests/15 min and 5 wrong codes/15 min. Per IP: 20 requests/15 min. Resend cooldown: 60 seconds. Counters live in Redis. |
+| Browser headers | `next.config.mjs` sends CSP, `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS in production. The API sends the same baseline plus `Cache-Control: no-store`. |
+
+Two production settings matter for the BFF:
+
+- `API_INTERNAL_URL` is the server-only API origin. It is never sent to the
+  browser. If it is omitted the BFF falls back to `NEXT_PUBLIC_API_URL`, then
+  `http://localhost:4000/api/v1`.
+- `NEXT_PUBLIC_SOCKET_URL` is the browser WebSocket origin. It is required in
+  production; without it the order screen keeps its 20-second poll and reports
+  live updates as unavailable instead of connecting to localhost.
+- `TRUST_PROXY` is the number of trusted proxy hops in front of the API. Leave
+  it at `0` when the API is directly exposed. Set it to `1` behind the Next or
+  nginx proxy so the per-IP OTP limit reads the browser address from
+  `X-Forwarded-For`. The API must not be publicly reachable when a proxy header
+  is trusted.
+
 ### Local verification
 
 ```bash
@@ -65,6 +93,16 @@ npm run build
 npm run build:api
 npm run check:prod-guard
 npm run check:api-health
+```
+
+`check:auth-smoke` is a manual pre-release check that needs the Next server on
+port 3000, the API on port 4000, PostgreSQL and Redis. It proves cookie flags,
+the absence of a token in the response body, anonymous session hydration, CSRF
+rejection, logout revocation, WebSocket-ticket rejection on HTTP, and OTP
+limits:
+
+```bash
+npm run check:auth-smoke
 ```
 
 `check:prod-guard` proves the production guard rejects an example secret, a

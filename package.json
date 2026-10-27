@@ -14,6 +14,7 @@
     "check:api-health": "node scripts/check-api-health.mjs",
     "check:prod-guard": "node scripts/check-production-guard.mjs",
     "check:money-smoke": "node scripts/smoke-phase2.mjs",
+    "check:auth-smoke": "node scripts/smoke-phase3.mjs",
     "verify": "npm run check:no-fakes && npm run typecheck && npm run typecheck:api && npm run build && npm run build:api",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",

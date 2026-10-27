@@ -140,6 +140,31 @@ const RULES = [
     include: ['apps/api/src/modules/notifications/'],
     pattern: /return\s*\{\s*success:\s*true\s*\}/,
   },
+  {
+    id: 'localstorage-token',
+    why: 'Access tokens belong in the httpOnly session cookie set by the BFF, never in localStorage where XSS can read them.',
+    include: ['src/', 'app/'],
+    pattern:
+      /localStorage\.(?:getItem|setItem|removeItem)\(\s*['"`]eatclub_token['"`]/,
+  },
+  {
+    id: 'client-bearer-header',
+    why: 'The browser must not attach API credentials itself; the BFF converts the httpOnly cookie into a Bearer header server-side.',
+    include: ['src/'],
+    pattern: /['"`]Authorization['"`]\s*:/,
+  },
+  {
+    id: 'direct-api-base',
+    why: 'Browser code must call /api/bff, not the NestJS API origin, so the token never reaches JavaScript.',
+    include: ['src/'],
+    pattern: /NEXT_PUBLIC_API_URL|localhost:4000\/api\/v1/,
+  },
+  {
+    id: 'access-token-in-browser',
+    why: 'The BFF strips accessToken from every response. A client that reads it means the token is exposed to JavaScript again.',
+    include: ['src/'],
+    pattern: /\.accessToken\b/,
+  },
 ];
 
 const ALLOW_MARKER = 'no-fakes-allow';

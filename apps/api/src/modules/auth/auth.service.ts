@@ -3,19 +3,33 @@ import {
   UnauthorizedException,
   ForbiddenException,
   InternalServerErrorException,
+  BadRequestException,
   Logger,
   ServiceUnavailableException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ReferralsService } from '../referrals/referrals.service';
+import { TokenDenylistService } from '../../common/auth/token-denylist.service';
+import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 import Redis from 'ioredis';
 import { redisUrl } from '../../common/config/env.validation';
 
 const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
+const OTP_RESEND_COOLDOWN_SECONDS = 60;
+const OTP_REQUEST_WINDOW_SECONDS = 15 * 60;
+const OTP_REQUEST_PER_EMAIL = 5;
+const OTP_REQUEST_PER_IP = 20;
+const OTP_FAILURE_WINDOW_SECONDS = 15 * 60;
+const OTP_MAX_FAILURES = 5;
+const WS_TICKET_TTL_SECONDS = 60;
 const TRIAL_DAYS = 30;
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 @Injectable()
 export class AuthService {
@@ -27,6 +41,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly notificationsService: NotificationsService,
     private readonly referralsService: ReferralsService,
+    private readonly tokenDenylist: TokenDenylistService,
   ) {
     // Connect to Redis — OTPs survive server restarts/hot-reloads.
     // No localhost fallback: REDIS_URL is required and validated at startup.
@@ -46,9 +61,91 @@ export class AuthService {
     );
   }
 
-  async requestOtp(email: string) {
-    const cleanEmail = email.trim().toLowerCase();
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+  /**
+   * Emails are the account key, so reject malformed input before it can create
+   * a Redis key or a database row. Lower-casing keeps `A@x.com` and `a@x.com`
+   * the same account.
+   */
+  private normaliseEmail(email: string) {
+    const clean = String(email || '').trim().toLowerCase();
+
+    if (!clean || clean.length > 254 || !EMAIL_PATTERN.test(clean)) {
+      throw new BadRequestException('Enter a valid email address.');
+    }
+
+    return clean;
+  }
+
+  private async incrementWithTtl(key: string, windowSeconds: number) {
+    // INCR and EXPIRE must be atomic. Two separate commands can leave a
+    // counter with no TTL if the process dies between them, locking an email
+    // out permanently.
+    const count = await this.redis.eval(
+      "local c = redis.call('INCR', KEYS[1]) if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return c",
+      1,
+      key,
+      windowSeconds,
+    );
+
+    return Number(count);
+  }
+
+  private tooManyRequests(message: string) {
+    return new HttpException(message, HttpStatus.TOO_MANY_REQUESTS);
+  }
+
+  private async enforceRateLimit(
+    bucket: string,
+    limit: number,
+    windowSeconds: number,
+    message: string,
+  ) {
+    const key = `ratelimit:${bucket}`;
+    const count = await this.incrementWithTtl(key, windowSeconds);
+
+    if (count > limit) {
+      const ttl = await this.redis.ttl(key);
+      throw this.tooManyRequests(
+        `${message} Try again in ${Math.max(1, ttl)} seconds.`,
+      );
+    }
+  }
+
+  async requestOtp(email: string, ip?: string) {
+    const cleanEmail = this.normaliseEmail(email);
+    const clientIp = String(ip || 'unknown').trim() || 'unknown';
+
+    // Rate limits are checked before a code is generated so a flood cannot
+    // overwrite a legitimate customer's pending code.
+    await this.enforceRateLimit(
+      `otp:request:email:${cleanEmail}`,
+      OTP_REQUEST_PER_EMAIL,
+      OTP_REQUEST_WINDOW_SECONDS,
+      'Too many verification codes requested for this email.',
+    );
+    await this.enforceRateLimit(
+      `otp:request:ip:${clientIp}`,
+      OTP_REQUEST_PER_IP,
+      OTP_REQUEST_WINDOW_SECONDS,
+      'Too many verification codes requested from this network.',
+    );
+
+    const cooldownKey = `otp:cooldown:${cleanEmail}`;
+    const cooldown = await this.redis.set(
+      cooldownKey,
+      '1',
+      'EX',
+      OTP_RESEND_COOLDOWN_SECONDS,
+      'NX',
+    );
+
+    if (cooldown !== 'OK') {
+      throw this.tooManyRequests(
+        `Please wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.`,
+      );
+    }
+
+    const code = crypto.randomInt(100000, 1000000).toString();
 
     // Store OTP in Redis with TTL — survives hot-reloads. Never log the code.
     await this.redis.set(this.otpKey(cleanEmail), code, 'EX', OTP_TTL_SECONDS);
@@ -79,10 +176,27 @@ export class AuthService {
   }
 
   async verifyOtp(email: string, code: string, referralCode?: string) {
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = this.normaliseEmail(email);
+    const cleanCode = String(code || '').trim();
+
+    if (!/^\d{6}$/.test(cleanCode)) {
+      throw new BadRequestException('Enter the 6-digit verification code.');
+    }
+
+    // A stolen email address should not be enough to brute-force a 6-digit
+    // code: five wrong attempts locks verification for fifteen minutes.
+    const failureKey = `otp:fail:${cleanEmail}`;
+    const failures = Number(await this.redis.get(failureKey)) || 0;
+
+    if (failures >= OTP_MAX_FAILURES) {
+      throw this.tooManyRequests(
+        'Too many incorrect codes. Request a new code in 15 minutes.',
+      );
+    }
 
     // Dev magic bypass — requires BOTH a development environment and an explicit opt-in.
-    if (this.isDevOtpBypassEnabled() && code === '123456') {
+    if (this.isDevOtpBypassEnabled() && cleanCode === '123456') {
+      await this.redis.del(failureKey);
       this.logger.log(`🔓 Dev bypass used for ${cleanEmail}`);
       return this.upsertUserAndSign(cleanEmail, referralCode);
     }
@@ -92,7 +206,9 @@ export class AuthService {
 
     this.logger.log(`Verifying OTP for ${cleanEmail}`);
 
-    if (!storedCode || storedCode !== code) {
+    if (!storedCode || storedCode !== cleanCode) {
+      await this.incrementWithTtl(failureKey, OTP_FAILURE_WINDOW_SECONDS);
+
       throw new UnauthorizedException(
         !storedCode
           ? 'OTP has expired — please request a new one'
@@ -102,6 +218,7 @@ export class AuthService {
 
     // Delete OTP so it can only be used once
     await this.redis.del(this.otpKey(cleanEmail));
+    await this.redis.del(failureKey);
     this.logger.log(`✅ OTP verified for ${cleanEmail}`);
 
     return this.upsertUserAndSign(cleanEmail, referralCode);
@@ -131,6 +248,113 @@ export class AuthService {
     }
 
     return { user };
+  }
+
+  /**
+   * Hydration endpoint for the storefront.
+   *
+   * Returns `authenticated: false` instead of 401 when there is no token or the
+   * token is no longer valid, so an anonymous page load does not look like an
+   * error in the browser console or the access logs. It is deliberately
+   * `@Public()` and parses the Bearer header itself: the global guard would
+   * otherwise reject the request before this method could answer honestly.
+   */
+  async getSession(authorization?: string) {
+    const anonymous = { authenticated: false, role: null, user: null };
+    const token = this.extractBearer(authorization);
+
+    if (!token) return anonymous;
+
+    let claims: any;
+    try {
+      claims = this.jwtService.verify(token);
+    } catch {
+      return anonymous;
+    }
+
+    if (!claims?.sub || claims.scope === 'ws') return anonymous;
+
+    if (await this.tokenDenylist.isRevoked(claims.jti)) {
+      return anonymous;
+    }
+
+    if (claims.role === 'RIDER') {
+      const rider = await this.prisma.rider.findUnique({
+        where: { id: claims.sub },
+        include: { currentHub: true },
+      });
+
+      if (
+        !rider ||
+        rider.status === 'SUSPENDED' ||
+        rider.status === 'REJECTED'
+      ) {
+        return anonymous;
+      }
+
+      return { authenticated: true, role: 'RIDER', user: rider };
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: claims.sub },
+      include: { membership: { include: { plan: true } }, addresses: true },
+    });
+
+    if (!user || user.isBlocked) return anonymous;
+
+    return {
+      authenticated: true,
+      role: user.role || 'CUSTOMER',
+      user,
+    };
+  }
+
+  /**
+   * Real logout. Clearing the cookie on the client is not enough because a
+   * copied JWT stays valid until it expires; the token id is revoked in Redis
+   * for exactly its remaining lifetime.
+   */
+  async logout(actor: AuthenticatedActor) {
+    if (!actor?.jti) {
+      this.logger.warn(
+        'Logout requested for a token without jti. Rotate JWT_SECRET to invalidate pre-Phase-3 tokens.',
+      );
+      return { success: true, revoked: false };
+    }
+
+    await this.tokenDenylist.revoke(actor.jti, actor.exp);
+    return { success: true, revoked: true };
+  }
+
+  /**
+   * A socket needs to reconnect for hours, but a long-lived token in a
+   * WebSocket handshake is hard to revoke. The browser fetches a 60-second
+   * ticket per connection attempt instead; the ticket is marked `scope: 'ws'`
+   * so the HTTP guard refuses it everywhere else.
+   */
+  async issueWsTicket(actor: AuthenticatedActor) {
+    const ticket = this.jwtService.sign(
+      {
+        sub: actor.sub,
+        role: actor.role,
+        adminSubRole: actor.adminSubRole ?? null,
+        scopedHubId: actor.scopedHubId ?? null,
+        scopedBrandId: actor.scopedBrandId ?? null,
+        scope: 'ws',
+        jti: crypto.randomUUID(),
+      },
+      { expiresIn: WS_TICKET_TTL_SECONDS },
+    );
+
+    return { ticket, expiresIn: WS_TICKET_TTL_SECONDS };
+  }
+
+  private extractBearer(header?: string) {
+    if (!header) return null;
+    const [scheme, ...rest] = header.trim().split(/\s+/);
+    if (scheme?.toLowerCase() !== 'bearer') return null;
+    const token = rest.join('');
+    return token || null;
   }
 
   private async upsertUserAndSign(email: string, referralCode?: string) {
@@ -218,6 +442,7 @@ export class AuthService {
       adminSubRole: user.adminSubRole || null,
       scopedHubId: user.scopedHubId || null,
       scopedBrandId: user.scopedBrandId || null,
+      jti: crypto.randomUUID(),
     };
     const accessToken = this.jwtService.sign(payload);
 

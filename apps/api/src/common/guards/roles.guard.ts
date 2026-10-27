@@ -10,6 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ROLES_KEY, ADMIN_SUB_ROLES_KEY } from '../decorators/roles.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { PrismaService } from '../prisma/prisma.service';
+import { TokenDenylistService } from '../auth/token-denylist.service';
 
 interface JwtClaims {
   sub?: string;
@@ -18,6 +19,9 @@ interface JwtClaims {
   adminSubRole?: string | null;
   scopedHubId?: string | null;
   scopedBrandId?: string | null;
+  jti?: string;
+  exp?: number;
+  scope?: string;
 }
 
 @Injectable()
@@ -26,6 +30,7 @@ export class RolesGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly tokenDenylist: TokenDenylistService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -77,6 +82,22 @@ export class RolesGuard implements CanActivate {
 
     if (!claims.sub) {
       throw new UnauthorizedException('Malformed authentication token');
+    }
+
+    // 2b. WebSocket tickets are single-purpose: they may open a socket, never
+    //     call an HTTP route. Without this check a 60-second socket ticket
+    //     would be a fully privileged API token.
+    if (claims.scope === 'ws') {
+      throw new UnauthorizedException(
+        'WebSocket tickets cannot be used for API requests',
+      );
+    }
+
+    // 2c. Refuse signed-out tokens. A JWT stays cryptographically valid until
+    //     it expires, so logout revokes its `jti` in Redis. A Redis outage
+    //     fails closed rather than accepting an unverifiable session.
+    if (await this.tokenDenylist.isRevoked(claims.jti)) {
+      throw new UnauthorizedException('This session has been signed out');
     }
 
     // 3. Re-read the identity from the database on every request.

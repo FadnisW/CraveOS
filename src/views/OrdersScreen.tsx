@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Order, OrderStatus } from '../types';
 import { api } from '../lib/api-client';
+import { socketBaseUrl } from '../lib/socket';
 import { mapApiOrder, mapApiOrders } from '../lib/order-mapper';
 import { useUser } from '../context/UserContext';
 import {
@@ -79,7 +80,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   activeOrder: initialOrder,
   onBackToHome,
 }) => {
-  const { user, token } = useUser();
+  const { user } = useUser();
   const [activeOrder, setActiveOrder] = useState<Order | null>(initialOrder);
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -142,14 +143,26 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   // the screen correct if the socket drops entirely.
   useEffect(() => {
     const orderId = activeOrder?.id;
-    if (!orderId || !token) return;
+    if (!orderId || !user) return;
 
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:4000';
+    const socketUrl = socketBaseUrl();
+    if (!socketUrl) {
+      // No live socket is configured. The 20-second poll below still keeps the
+      // order screen correct, and `isLiveConnected` stays false.
+      return;
+    }
+
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
-      // Order rooms are authenticated; the token identifies the buyer.
-      auth: { token },
+      // Order rooms are authenticated. The ticket is fetched fresh for every
+      // handshake and reconnect; the long-lived cookie never leaves the BFF.
+      auth: (cb) => {
+        api
+          .getWsTicket()
+          .then((res) => cb({ token: res.ticket }))
+          .catch(() => cb({}));
+      },
     });
 
     socket.on('connect', () => {
@@ -182,7 +195,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
       socket.disconnect();
       clearInterval(poll);
     };
-  }, [activeOrder?.id, token, refreshOrder]);
+  }, [activeOrder?.id, user?.id, refreshOrder]);
 
   const currentStep = useMemo(
     () => (activeOrder ? timelineIndex(activeOrder.status) : -1),

@@ -22,6 +22,7 @@ import { MembershipModule } from './modules/membership/membership.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { RolesGuard } from './common/guards/roles.guard';
 import { JwtConfigModule } from './common/auth/jwt-config.module';
+import { TokenDenylistModule } from './common/auth/token-denylist.module';
 import { validateEnv } from './common/config/env.validation';
 import { HealthModule } from './modules/health/health.module';
 
@@ -44,6 +45,7 @@ import { HealthModule } from './modules/health/health.module';
 
     // Auth: one JWT configuration for the whole app (fails fast without JWT_SECRET)
     JwtConfigModule,
+    TokenDenylistModule,
 
     // Feature modules
     AuthModule,

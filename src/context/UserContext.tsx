@@ -2,21 +2,18 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { SavedAddress, UserProfile } from '../types';
+import { api } from '../lib/api-client';
 
 interface UserContextType {
   user: UserProfile | null;
-  token: string | null;
   isAuthenticated: boolean;
   isMounted: boolean;
-  login: (user: any, token: string) => void;
-  logout: () => void;
+  login: (user: any) => void;
+  logout: () => Promise<boolean>;
   refreshUser: (user: any) => void;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
-
-/** Bumped whenever the persisted user shape changes. */
-const USER_SCHEMA_VERSION = 3;
 
 function normaliseAddress(raw: any): SavedAddress {
   const type = String(raw?.type || 'home').toLowerCase();
@@ -106,71 +103,73 @@ function normaliseUser(raw: any): UserProfile {
 }
 
 export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Always start as null/false to match SSR — localStorage is read only after mount
+  // Always start as null/false to match SSR. The real session is read from the
+  // server after mount: there is no token or user snapshot in localStorage.
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
 
-  // Hydrate from localStorage after first client-side mount (fixes Next.js SSR hydration mismatch)
   useEffect(() => {
-    const savedToken = localStorage.getItem('eatclub_token');
-    const savedUser = localStorage.getItem('eatclub_user');
+    let cancelled = false;
 
-    if (savedToken && savedUser) {
+    (async () => {
       try {
-        const parsed = JSON.parse(savedUser);
+        const session = await api.getSession();
 
-        if (parsed.schemaVersion !== USER_SCHEMA_VERSION) {
-          // Old sessions may hold raw paise and a fake membership. Force a
-          // clean sign-in rather than rendering wrong balances.
-          localStorage.removeItem('eatclub_token');
-          localStorage.removeItem('eatclub_user');
+        if (cancelled) return;
+
+        if (session?.authenticated && session.user) {
+          setUser(normaliseUser(session.user));
         } else {
-          setUser(parsed.user);
-          setToken(savedToken);
+          setUser(null);
         }
-      } catch (e) {
-        localStorage.removeItem('eatclub_token');
-        localStorage.removeItem('eatclub_user');
+      } catch {
+        // The API may be starting or briefly unreachable. Stay anonymous and
+        // let each screen render its own honest error state; the next load
+        // retries hydration.
+      } finally {
+        if (!cancelled) setIsMounted(true);
       }
-    }
+    })();
 
-    setIsMounted(true);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const persist = (nextUser: UserProfile, accessToken: string) => {
-    setUser(nextUser);
-    setToken(accessToken);
-    localStorage.setItem('eatclub_token', accessToken);
-    localStorage.setItem(
-      'eatclub_user',
-      JSON.stringify({ schemaVersion: USER_SCHEMA_VERSION, user: nextUser }),
-    );
-  };
+  // A 401 from any request means the server rejected the session (expired,
+  // revoked, or account blocked). Drop the stale profile immediately.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('craveos:session-expired', onExpired);
+    return () => window.removeEventListener('craveos:session-expired', onExpired);
+  }, []);
 
-  const login = (loggedUser: any, accessToken: string) => {
-    persist(normaliseUser(loggedUser), accessToken);
+  const login = (loggedUser: any) => {
+    setUser(normaliseUser(loggedUser));
   };
 
   const refreshUser = (rawUser: any) => {
-    const currentToken = token || localStorage.getItem('eatclub_token');
-    if (!currentToken) return;
-    persist(normaliseUser(rawUser), currentToken);
+    setUser(normaliseUser(rawUser));
   };
 
-  const logout = () => {
-    setUser(null);
-    setToken(null);
-    localStorage.removeItem('eatclub_token');
-    localStorage.removeItem('eatclub_user');
+  const logout = async () => {
+    try {
+      // The API revokes the token id before the BFF clears the cookie. If this
+      // fails the session is still live, so the UI must not pretend otherwise.
+      await api.logout();
+      setUser(null);
+      return true;
+    } catch (error) {
+      console.error('Sign out failed; the session is still active.', error);
+      return false;
+    }
   };
 
   return (
     <UserContext.Provider
       value={{
         user,
-        token,
-        isAuthenticated: !!token,
+        isAuthenticated: !!user,
         isMounted,
         login,
         logout,

@@ -97,9 +97,9 @@ export const AppContent: React.FC = () => {
     setCurrentView('orders');
   };
 
-  const handleAuthSuccess = (loggedUser: any, token: string) => {
-    if (!loggedUser || !token) return;
-    login(loggedUser, token);
+  const handleAuthSuccess = (loggedUser: any) => {
+    if (!loggedUser) return;
+    login(loggedUser);
 
     // Staff who sign in from the storefront land in their console. Anyone who
     // was mid-checkout stays there so the order flow is not lost.
@@ -108,8 +108,10 @@ export const AppContent: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    const signedOut = await logout();
+    if (!signedOut) return;
+
     setCurrentView('home');
     setActiveAddress(null);
     setPlacedOrder(null);
