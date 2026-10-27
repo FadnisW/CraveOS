@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ShoppingBag, Search, MapPin, Sun, Moon, Sparkles, ChevronDown, User, KeyRound, LogOut } from 'lucide-react';
+import { ShoppingBag, Search, MapPin, Sun, Moon, ChevronDown, User, KeyRound, LogOut } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useCart } from '../context/CartContext';
 import { useUser } from '../context/UserContext';
@@ -22,7 +22,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenCart,
   onOpenAddressModal,
   onOpenAuthModal,
-  activeAddressLabel = 'Home • HSR Layout Sector 2',
+  activeAddressLabel = 'Select delivery address',
 }) => {
   const { theme, toggleTheme } = useTheme();
   const { itemCount } = useCart();
@@ -30,15 +30,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="sticky top-0 z-40 w-full backdrop-blur-md bg-white/85 dark:bg-slate-900/85 border-b border-gray-200/80 dark:border-slate-800/80 transition-colors duration-300">
-      {/* Top Eatclub Member Savings Ticker */}
-      <button 
-        onClick={() => onNavigate('membership')}
-        className="w-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white text-xs font-semibold py-1 px-4 text-center flex items-center justify-center gap-2 hover:opacity-95 transition-opacity cursor-pointer"
-      >
-        <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
-        <span>Eatclub Member Benefits: <strong>FLAT 30% OFF</strong> + <strong>₹0 Delivery Fee</strong> + <strong>₹0 Packaging Fee</strong> on every order! <span className="underline font-bold ml-1">View Savings Calculator &rarr;</span></span>
-      </button>
-
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 gap-4">
           
@@ -59,7 +50,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 </span>
                 <span className="text-[10px] font-medium text-gray-500 dark:text-slate-400 -mt-1">
-                  1 Cart • 8 Premium Brands
+                  One cart • multiple kitchens
                 </span>
               </div>
             </button>
@@ -69,10 +60,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               onClick={onOpenAddressModal}
               className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-gray-100 dark:bg-slate-800/80 hover:bg-gray-200/80 dark:hover:bg-slate-700/80 border border-gray-200 dark:border-slate-700/60 text-xs font-semibold text-gray-800 dark:text-slate-200 transition-colors"
             >
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
               <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
               <span className="max-w-[200px] truncate">{activeAddressLabel}</span>
               <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
@@ -89,9 +76,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="flex-1 text-[13px] text-gray-400 dark:text-slate-500 font-normal truncate">
                 Search dishes, brands…
               </span>
-              <kbd className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 text-[10px] font-medium text-gray-400 dark:text-slate-400 shadow-sm">
-                ⌘K
-              </kbd>
             </button>
           </div>
 

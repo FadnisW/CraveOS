@@ -816,7 +816,7 @@ export class AdminService {
       getWalletRefundsByOrder(this.prisma),
     ]);
 
-    const byGateway = { RAZORPAY: 0, WALLET: 0, COD: 0 };
+    const byGateway = { RAZORPAY: 0, WALLET: 0 };
     let totalRevenuePaise = 0;
     let totalTransactions = 0;
 

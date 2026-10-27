@@ -18,7 +18,7 @@ import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 export type { AuthenticatedActor };
 
-export type PaymentMethod = 'UPI' | 'CARD' | 'WALLET' | 'COD';
+export type PaymentMethod = 'UPI' | 'CARD' | 'WALLET';
 
 export interface CreateOrderDto {
   /** Ignored — the authenticated principal is always the order owner. */
@@ -243,14 +243,8 @@ export class OrdersService {
       };
     });
 
-    // Edge Case 9A (SDD §5.2 & §7.3): validate the offer window at checkout time.
-    const activeOffers = await this.pricingService.getActiveOffers();
-    const hasHappyHourCoupon = dto.couponCode && /HAPPY/i.test(dto.couponCode);
-    if (hasHappyHourCoupon && !activeOffers.isHappyHour) {
-      throw new ConflictException(
-        "Offer Expired: The 'Happy Hours' promotional discount has expired. Your cart prices have been re-evaluated to standard rates.",
-      );
-    }
+    // Edge Case 9A (SDD §5.2 & §7.3): the coupon itself is validated by the
+    // pricing engine below. There is no clock-based "Happy Hour" gate.
 
     const priceBreakdown = await this.pricingService.calculateCartPrice({
       userId,
@@ -281,6 +275,11 @@ export class OrdersService {
     const finalPaidPaise = Math.round(priceBreakdown.finalPayable * 100);
 
     const paymentMethod: PaymentMethod = dto.paymentMethod || 'UPI';
+    if (!['UPI', 'CARD', 'WALLET'].includes(paymentMethod)) {
+      throw new BadRequestException(
+        `Unsupported payment method '${paymentMethod}'. Use UPI, CARD or WALLET.`,
+      );
+    }
     if (paymentMethod === 'WALLET' && finalPaidPaise > 0) {
       throw new ConflictException(
         'Your wallet balance does not cover this order. Choose another payment method or remove items.',
@@ -358,7 +357,6 @@ export class OrdersService {
 
       // Wallet money is only moved when it is actually being spent now:
       //  - WALLET: the order is settled immediately.
-      //  - COD:    the wallet portion is settled up front, cash covers the rest.
       //  - UPI/CARD: debited on verified payment success (see PaymentsService),
       //    so abandoning the Razorpay modal no longer silently burns wallet credit.
       // If wallet credit covers the entire bill there is nothing left for a
@@ -367,7 +365,7 @@ export class OrdersService {
       const walletCoversAll = walletAppliedPaise > 0 && finalPaidPaise === 0;
       const isFreeOrder = walletAppliedPaise === 0 && finalPaidPaise === 0;
 
-      if (paymentMethod === 'WALLET' || paymentMethod === 'COD' || walletCoversAll) {
+      if (paymentMethod === 'WALLET' || walletCoversAll) {
         await this.debitWallet(tx, userId, walletAppliedPaise, parentOrder.id);
 
         if (paymentMethod === 'WALLET' || walletCoversAll) {
@@ -384,7 +382,7 @@ export class OrdersService {
 
       // A ₹0 order (100% coupon) still needs a settled payment row so the
       // kitchen payment gate does not block it forever.
-      if (isFreeOrder && !['WALLET', 'COD'].includes(paymentMethod)) {
+      if (isFreeOrder && paymentMethod !== 'WALLET') {
         await tx.payment.create({
           data: {
             orderId: parentOrder.id,
@@ -438,42 +436,6 @@ export class OrdersService {
         if (winner && winner.userId === userId) return winner;
       }
       throw error;
-    }
-
-    // Post-transaction: referral bonus on the user's first-ever order.
-    if (createdOrder) {
-      try {
-        const [orderCount, userRecord] = await Promise.all([
-          this.prisma.order.count({ where: { userId } }),
-          this.prisma.user.findUnique({ where: { id: userId }, select: { referredById: true } }),
-        ]);
-
-        if (orderCount === 1 && userRecord?.referredById) {
-          const referrerId = userRecord.referredById;
-          const REFERRAL_BONUS_PAISE = 10000; // ₹100
-
-          await this.prisma.$transaction(async (bonusTx) => {
-            await bonusTx.user.update({
-              where: { id: referrerId },
-              data: { walletBalance: { increment: REFERRAL_BONUS_PAISE } },
-            });
-            await bonusTx.walletTransaction.create({
-              data: {
-                userId: referrerId,
-                amountInPaise: REFERRAL_BONUS_PAISE,
-                reason: 'REFERRAL_BONUS',
-                orderId: createdOrder.id,
-              },
-            });
-          });
-
-          this.logger.log(
-            `🎁 Referral bonus ₹100 credited to ${referrerId} for ${userId}'s first order ${createdOrder.id}`,
-          );
-        }
-      } catch (refErr: any) {
-        this.logger.warn(`Referral bonus trigger failed for order ${createdOrder?.id}: ${refErr.message}`);
-      }
     }
 
     // Post-transaction: enqueue kitchen jobs.
@@ -586,9 +548,9 @@ export class OrdersService {
     }
 
     const cancelled = await this.prisma.$transaction(async (tx) => {
-      // If wallet money was debited at creation (COD), put it back. For UPI /
-      // CARD the wallet is only debited on verified payment success, so there
-      // is nothing to refund here.
+      // If wallet money was debited at creation (WALLET, or wallet credit that
+      // covered the whole bill), put it back. For UPI / CARD the wallet is only
+      // debited on verified payment success, so there is nothing to refund here.
       const walletSpend = await tx.walletTransaction.findFirst({
         where: { orderId, reason: 'ORDER_SPEND' },
       });
@@ -837,7 +799,7 @@ export class OrdersService {
       where: { orderId: brandOrder.orderId },
       select: { status: true },
     });
-    const isSettled = payment?.status === 'SUCCESS' || brandOrder.order.paymentMethod === 'COD';
+    const isSettled = payment?.status === 'SUCCESS';
     if (!isSettled) {
       throw new ConflictException(
         'This order has not been paid yet — the kitchen cannot start preparing it.',
@@ -950,10 +912,9 @@ export class OrdersService {
         tx.walletTransaction.findFirst({ where: { orderId, reason: 'ORDER_SPEND' } }),
       ]);
 
-      // Refund only money that was actually collected. For COD, the cash
-      // portion is not collected until delivery — refunding finalPaidPaise
-      // would mint wallet credit out of thin air. A synthetic wallet payment
-      // already represents the wallet debit, so it must not be counted twice.
+      // Refund only money that was actually collected. A synthetic wallet
+      // payment already represents the wallet debit, so it must not be counted
+      // twice.
       let collectedPaise = 0;
       if (successfulPayment?.status === 'SUCCESS') {
         collectedPaise += successfulPayment.amountInPaise;

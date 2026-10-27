@@ -417,7 +417,7 @@ model WalletTransaction {
   id            String   @id @default(cuid())
   userId        String
   amountInPaise Int      // signed (+ credit, - debit)
-  reason        String   // "REFERRAL_BONUS" | "ORDER_REFUND" | "ORDER_SPEND"
+  reason        String   // "WELCOME_BONUS" | "ORDER_SPEND" | "ORDER_REFUND" | "PARTIAL_ORDER_REFUND" | free-text admin reason
   orderId       String?
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt     DateTime @default(now())

@@ -12,10 +12,10 @@ import {
   CreditCard,
   Wallet,
   Smartphone,
-  Banknote,
   ArrowLeft,
-  Sparkles,
   CheckCircle2,
+  Tag,
+  X,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -23,10 +23,11 @@ interface CheckoutScreenProps {
   onBack: () => void;
   onOrderPlaced: (order: Order) => void;
   onOpenAuthModal?: () => void;
-  activeAddress: SavedAddress;
+  onOpenAddressModal?: () => void;
+  activeAddress: SavedAddress | null;
 }
 
-type PaymentMethod = 'UPI' | 'CARD' | 'WALLET' | 'COD';
+type PaymentMethod = 'UPI' | 'CARD' | 'WALLET';
 
 interface ServerQuote {
   itemTotal: number;
@@ -84,39 +85,32 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   onBack,
   onOrderPlaced,
   onOpenAuthModal,
+  onOpenAddressModal,
   activeAddress,
 }) => {
   const { user, isAuthenticated } = useUser();
-  const {
-    cartItems,
-    mrpTotal,
-    memberSavings,
-    appliedCoupon,
-    taxes,
-    finalTotal,
-    clearCart,
-    pinnedHubId,
-    useWallet,
-    setUseWallet,
-  } = useCart();
+  const { cartItems, mrpTotal, clearCart, pinnedHubId } = useCart();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('UPI');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [quote, setQuote] = useState<ServerQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState<boolean>(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quoteAttempt, setQuoteAttempt] = useState<number>(0);
+  const [couponInput, setCouponInput] = useState<string>('');
+  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
 
   const idempotencyKeyRef = useRef<string>(newIdempotencyKey());
   const attemptSignature = useMemo(
     () =>
       JSON.stringify({
-        addressId: activeAddress.id,
+        addressId: activeAddress?.id || null,
         items: cartItems.map((ci) => [ci.item.id, ci.quantity]),
-        coupon: appliedCoupon?.code || null,
+        coupon: appliedCouponCode,
         paymentMethod,
-        useWallet,
       }),
-    [activeAddress.id, cartItems, appliedCoupon?.code, paymentMethod, useWallet],
+    [activeAddress?.id, cartItems, appliedCouponCode, paymentMethod],
   );
 
   useEffect(() => {
@@ -128,14 +122,16 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   useEffect(() => {
     if (!cartItems.length) {
       setQuote(null);
+      setQuoteError(null);
       return;
     }
 
     let cancelled = false;
     setQuoteLoading(true);
+    setQuoteError(null);
 
     const requestedWallet =
-      paymentMethod === 'WALLET' || useWallet ? user?.walletBalance ?? 0 : 0;
+      paymentMethod === 'WALLET' ? user?.walletBalance ?? 0 : 0;
 
     api
       .quoteOrder({
@@ -146,14 +142,16 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
           memberPrice: ci.item.memberPrice,
           quantity: ci.quantity,
         })),
-        couponCode: appliedCoupon?.code,
+        couponCode: appliedCouponCode || undefined,
         useWalletBalance: requestedWallet,
       })
       .then((result) => {
         if (!cancelled) setQuote(result as ServerQuote);
       })
-      .catch(() => {
-        if (!cancelled) setQuote(null);
+      .catch((err: any) => {
+        if (cancelled) return;
+        setQuote(null);
+        setQuoteError(err?.message || 'Could not calculate the order total.');
       })
       .finally(() => {
         if (!cancelled) setQuoteLoading(false);
@@ -164,39 +162,49 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     };
   }, [
     cartItems,
-    appliedCoupon?.code,
+    appliedCouponCode,
     user?.id,
     user?.isMember,
     user?.walletBalance,
-    useWallet,
     paymentMethod,
+    quoteAttempt,
   ]);
 
-  const display = useMemo(
-    () => ({
-      itemTotal: quote?.itemTotal ?? mrpTotal,
-      memberSavings: quote?.memberDiscount ?? memberSavings,
-      couponDiscount: quote?.couponDiscount ?? 0,
-      deliveryFee: quote?.deliveryFee ?? 0,
-      packagingFee: quote?.packagingFee ?? 0,
-      taxes: quote?.taxes ?? taxes,
-      walletApplied: quote?.walletApplied ?? 0,
-      total: quote?.finalPayable ?? finalTotal,
-    }),
-    [quote, mrpTotal, memberSavings, taxes, finalTotal],
-  );
+  const couponInvalid = !!quote?.couponInvalid;
+  const couponApplied = !!quote?.couponApplied;
 
   const walletShortfall =
     paymentMethod === 'WALLET' && quote ? Math.max(0, quote.finalPayable) : 0;
-  const couponInvalid = !!quote?.couponInvalid;
+
   const canPlaceOrder =
+    !!activeAddress &&
+    isAuthenticated &&
     !isProcessing &&
     !quoteLoading &&
+    !!quote &&
     cartItems.length > 0 &&
     !couponInvalid &&
     walletShortfall === 0;
 
+  const applyCoupon = () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) return;
+    setAppliedCouponCode(code);
+    setCheckoutError(null);
+  };
+
+  const removeCoupon = () => {
+    setAppliedCouponCode(null);
+    setCouponInput('');
+    setCheckoutError(null);
+  };
+
   const handlePlaceOrder = async () => {
+    if (!activeAddress) {
+      onOpenAddressModal?.();
+      return;
+    }
+
     if (!isAuthenticated || !user) {
       onOpenAuthModal?.();
       return;
@@ -207,9 +215,14 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       return;
     }
 
+    if (!quote) {
+      setCheckoutError('Wait for the server total before placing the order.');
+      return;
+    }
+
     if (couponInvalid) {
       setCheckoutError(
-        `Coupon '${appliedCoupon?.code}' is not valid for this cart. Remove it and try again.`,
+        `Coupon '${appliedCouponCode}' is not valid for this cart. Remove it and try again.`,
       );
       return;
     }
@@ -220,9 +233,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     // If wallet credit covers the whole bill, settle from the wallet even when
     // the customer picked UPI/CARD — there is nothing left for a gateway.
     const effectivePaymentMethod: PaymentMethod =
-      quote && quote.walletApplied > 0 && quote.finalPayable <= 0
-        ? 'WALLET'
-        : paymentMethod;
+      quote.walletApplied > 0 && quote.finalPayable <= 0 ? 'WALLET' : paymentMethod;
 
     let createdOrder: any = null;
 
@@ -242,8 +253,8 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       });
 
       const useWalletBalance =
-        effectivePaymentMethod === 'WALLET' || useWallet
-          ? quote?.walletBalanceRupees ?? user.walletBalance
+        effectivePaymentMethod === 'WALLET'
+          ? quote.walletBalanceRupees ?? user.walletBalance
           : 0;
 
       createdOrder = await api.createOrder(
@@ -254,7 +265,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
             menuItemId: ci.item.id,
             quantity: ci.quantity,
           })),
-          couponCode: appliedCoupon?.code,
+          couponCode: appliedCouponCode || undefined,
           useWalletBalance,
           paymentMethod: effectivePaymentMethod,
         },
@@ -267,7 +278,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
 
           if (!rzpOrder?.key) {
             throw new Error(
-              'The payment gateway is not configured. Please choose Cash on Delivery or Wallet.',
+              'The payment gateway is not configured. Choose Wallet or contact support.',
             );
           }
 
@@ -290,7 +301,12 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               handler: (response: any) => resolve(response),
               modal: {
                 ondismiss: () =>
-                  reject(paymentError('Payment was cancelled. Your order has not been placed.', 'DISMISSED')),
+                  reject(
+                    paymentError(
+                      'Payment was cancelled. Your order has not been placed.',
+                      'DISMISSED',
+                    ),
+                  ),
               },
             };
 
@@ -327,7 +343,6 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
 
       confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       clearCart();
-      setUseWallet(false);
       // The next order must never replay this one.
       idempotencyKeyRef.current = newIdempotencyKey();
       onOrderPlaced(mapApiOrder(settledOrder));
@@ -356,8 +371,17 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     { id: 'UPI', label: 'UPI (GPay / PhonePe)', icon: Smartphone },
     { id: 'CARD', label: 'Credit / Debit Card', icon: CreditCard },
     { id: 'WALLET', label: `Eatclub Wallet (₹${user?.walletBalance ?? 0})`, icon: Wallet },
-    { id: 'COD', label: 'Cash on Delivery', icon: Banknote },
   ];
+
+  const buttonLabel = () => {
+    if (isProcessing) return 'Confirming Order...';
+    if (!activeAddress) return 'Add delivery address';
+    if (!isAuthenticated) return 'Sign in to place order';
+    if (quoteLoading) return 'Calculating totals…';
+    if (!quote) return 'Total unavailable';
+    if (quote.finalPayable <= 0) return 'Place Order';
+    return `Pay ₹${quote.finalPayable.toFixed(0)} & Place Order`;
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -372,46 +396,52 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-white">Checkout</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Section: Address & Payment */}
         <div className="lg:col-span-7 space-y-6">
-          {/* Non-Member Free Trial Upsell Banner */}
-          {(!user || !user.isMember) && mrpTotal > 0 && (
-            <div className="p-5 rounded-3xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white shadow-lg space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-black text-sm">
-                  <Sparkles className="w-5 h-5 text-amber-200 shrink-0" />
-                  <span>Save ₹{Math.round(mrpTotal * 0.3) + 45 + 25} with Free Trial!</span>
-                </div>
-                <span className="text-[10px] font-extrabold px-3 py-1 rounded-full bg-white/20 uppercase tracking-wider">
-                  30-Day Trial
-                </span>
-              </div>
-              <p className="text-xs text-rose-100 leading-relaxed">
-                You are paying ₹{45 + 25} in delivery & packaging fees and missing 30% member
-                discount. Join EatClub Free Trial now to save ₹{Math.round(mrpTotal * 0.3) + 45 + 25}{' '}
-                instantly!
-              </p>
-            </div>
-          )}
-
-          {/* Delivery Address Card */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <MapPin className="w-5 h-5 text-rose-600 dark:text-rose-400" />
                 <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Delivering To</h3>
               </div>
-              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                20-25 Mins SLA
-              </span>
+              {onOpenAddressModal && (
+                <button
+                  onClick={onOpenAddressModal}
+                  className="text-[11px] font-extrabold text-rose-600 dark:text-rose-400"
+                >
+                  {activeAddress ? 'Change' : 'Add address'}
+                </button>
+              )}
             </div>
 
-            <div className="p-3 rounded-2xl bg-gray-50 dark:bg-slate-800/50 border border-gray-200/60 dark:border-slate-700 text-xs space-y-1">
-              <span className="font-extrabold uppercase text-gray-900 dark:text-white">
-                {activeAddress.label}
-              </span>
-              <p className="text-gray-600 dark:text-slate-300">{activeAddress.addressLine}</p>
-            </div>
+            {activeAddress ? (
+              <div className="p-3 rounded-2xl bg-gray-50 dark:bg-slate-800/50 border border-gray-200/60 dark:border-slate-700 text-xs space-y-1">
+                <span className="font-extrabold uppercase text-gray-900 dark:text-white">
+                  {activeAddress.label}
+                </span>
+                <p className="text-gray-600 dark:text-slate-300">{activeAddress.addressLine}</p>
+                {activeAddress.resolvedHubId && (
+                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                    Served by {activeAddress.resolvedHubId}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="p-4 rounded-2xl border border-dashed border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-300 space-y-2">
+                <p className="font-extrabold">Add a delivery address to continue.</p>
+                <p>
+                  The hub is resolved from the address. Delivery availability is checked against
+                  that hub's service area.
+                </p>
+                {onOpenAddressModal && (
+                  <button
+                    onClick={onOpenAddressModal}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold"
+                  >
+                    Add delivery address
+                  </button>
+                )}
+              </div>
+            )}
 
             {!isAuthenticated && (
               <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">
@@ -420,22 +450,20 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
             )}
           </div>
 
-          {/* Payment Method Selector */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
             <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Select Payment Method</h3>
 
             <div className="grid grid-cols-2 gap-3">
-              {paymentOptions.map((m) => {
-                const Icon = m.icon;
-                const isSelected = paymentMethod === m.id;
-                const isWalletWithoutBalance = m.id === 'WALLET' && (user?.walletBalance ?? 0) <= 0;
+              {paymentOptions.map((option) => {
+                const Icon = option.icon;
+                const isSelected = paymentMethod === option.id;
+                const isWalletWithoutBalance =
+                  option.id === 'WALLET' && (user?.walletBalance ?? 0) <= 0;
+
                 return (
                   <button
-                    key={m.id}
-                    onClick={() => {
-                      setPaymentMethod(m.id);
-                      if (m.id === 'WALLET') setUseWallet(true);
-                    }}
+                    key={option.id}
+                    onClick={() => setPaymentMethod(option.id)}
                     disabled={isWalletWithoutBalance}
                     className={`p-4 rounded-2xl border text-left flex items-start gap-3 transition-all disabled:opacity-40 ${
                       isSelected
@@ -443,28 +471,16 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                         : 'border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-800/50 hover:bg-gray-100'
                     }`}
                   >
-                    <Icon className={`w-5 h-5 shrink-0 ${isSelected ? 'text-rose-600' : 'text-gray-500'}`} />
+                    <Icon
+                      className={`w-5 h-5 shrink-0 ${isSelected ? 'text-rose-600' : 'text-gray-500'}`}
+                    />
                     <div>
-                      <h4 className="text-xs font-bold text-gray-900 dark:text-white">{m.label}</h4>
+                      <h4 className="text-xs font-bold text-gray-900 dark:text-white">{option.label}</h4>
                     </div>
                   </button>
                 );
               })}
             </div>
-
-            {paymentMethod !== 'WALLET' && (user?.walletBalance ?? 0) > 0 && (
-              <label className="flex items-center justify-between gap-3 p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 cursor-pointer">
-                <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                  Use wallet balance (₹{user?.walletBalance ?? 0}) on this order
-                </span>
-                <input
-                  type="checkbox"
-                  checked={useWallet}
-                  onChange={(event) => setUseWallet(event.target.checked)}
-                  className="w-4 h-4 accent-emerald-600"
-                />
-              </label>
-            )}
 
             {paymentMethod === 'WALLET' && walletShortfall > 0 && (
               <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs font-bold text-rose-700 dark:text-rose-300">
@@ -473,39 +489,58 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               </div>
             )}
 
-            {couponInvalid && (
-              <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-xs font-bold text-amber-800 dark:text-amber-300">
-                Coupon {appliedCoupon?.code} is not valid for this cart. Remove it in the cart to
-                continue.
-              </div>
-            )}
+            <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-slate-700">
+              <label className="text-xs font-bold text-gray-700 dark:text-slate-300">
+                Promo code
+              </label>
 
-            {paymentMethod === 'UPI' && (
-              <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-xs space-y-1.5">
-                <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
-                  <span>💡 Razorpay Test Mode UPI Notice</span>
+              {appliedCouponCode ? (
+                <div
+                  className={`flex items-center justify-between p-3 rounded-xl border text-xs font-bold ${
+                    couponInvalid
+                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300'
+                      : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Tag className="w-4 h-4" />
+                    {appliedCouponCode}
+                    {quoteLoading && <span className="font-normal">checking…</span>}
+                    {!quoteLoading && couponInvalid && <span>is not valid for this cart</span>}
+                    {!quoteLoading && couponApplied && (
+                      <span>-₹{quote?.couponDiscount.toFixed(0)}</span>
+                    )}
+                  </span>
+                  <button onClick={removeCoupon} className="text-gray-400 hover:text-rose-600">
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
-                  Real mobile banking apps (GPay, PhonePe) will reject sandbox QR codes with "Unable
-                  to pay" or "QR code invalid". Inside the Razorpay popup, enter{' '}
-                  <strong>
-                    <code className="bg-amber-100 dark:bg-amber-900/60 px-1 rounded">
-                      success@razorpay
-                    </code>
-                  </strong>{' '}
-                  as your test UPI ID or click <strong>Simulate Success</strong>.
-                </p>
-              </div>
-            )}
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter a code"
+                    value={couponInput}
+                    onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
+                    className="flex-1 px-3 py-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-xs text-gray-900 dark:text-white border border-transparent focus:border-rose-500 focus:outline-none"
+                  />
+                  <button
+                    onClick={applyCoupon}
+                    disabled={!couponInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 text-xs font-extrabold disabled:opacity-40"
+                  >
+                    Apply
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Right Section: Order Summary */}
         <div className="lg:col-span-5 space-y-6">
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
             <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Order Summary</h3>
 
-            {/* Line Items */}
             <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
               {cartItems.map((ci) => (
                 <div key={ci.cartItemId} className="flex justify-between items-center text-xs">
@@ -513,7 +548,9 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                     <span className="font-bold text-gray-900 dark:text-white">
                       {ci.quantity}x {ci.item.name}
                     </span>
-                    <p className="text-[10px] text-gray-400">{ci.item.brandId.toUpperCase()}</p>
+                    <p className="text-[10px] text-gray-400">
+                      {(ci.item.brandName || ci.item.brandId).toUpperCase()}
+                    </p>
                   </div>
                   <span className="font-extrabold text-gray-900 dark:text-white">
                     ₹{ci.totalPrice}
@@ -527,54 +564,69 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
             <div className="space-y-2 text-xs">
               <div className="flex justify-between text-gray-500 dark:text-slate-400">
                 <span>Item total (MRP)</span>
-                <span>₹{display.itemTotal.toFixed(0)}</span>
+                <span>₹{(quote?.itemTotal ?? mrpTotal).toFixed(0)}</span>
               </div>
-              {display.memberSavings > 0 && (
+
+              {quote && quote.memberDiscount > 0 && (
                 <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-bold">
                   <span>Eatclub Member Savings</span>
-                  <span>-₹{display.memberSavings.toFixed(0)}</span>
+                  <span>-₹{quote.memberDiscount.toFixed(0)}</span>
                 </div>
               )}
-              {display.couponDiscount > 0 && (
+
+              {quote && quote.couponDiscount > 0 && (
                 <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-bold">
-                  <span>Coupon {appliedCoupon?.code}</span>
-                  <span>-₹{display.couponDiscount.toFixed(0)}</span>
+                  <span>Coupon {appliedCouponCode}</span>
+                  <span>-₹{quote.couponDiscount.toFixed(0)}</span>
                 </div>
               )}
+
               <div className="flex justify-between text-gray-500 dark:text-slate-400">
-                <span>Delivery & Packaging</span>
-                <span
-                  className={
-                    display.deliveryFee + display.packagingFee === 0
-                      ? 'text-emerald-600 dark:text-emerald-400 font-bold'
-                      : ''
-                  }
-                >
-                  {display.deliveryFee + display.packagingFee === 0
-                    ? 'FREE (₹0)'
-                    : `₹${(display.deliveryFee + display.packagingFee).toFixed(0)}`}
+                <span>Delivery &amp; Packaging</span>
+                <span>
+                  {quote
+                    ? `₹${(quote.deliveryFee + quote.packagingFee).toFixed(0)}`
+                    : quoteLoading
+                      ? 'Calculating…'
+                      : '—'}
                 </span>
               </div>
+
               <div className="flex justify-between text-gray-500 dark:text-slate-400">
-                <span>Taxes (5% GST)</span>
-                <span>₹{display.taxes.toFixed(0)}</span>
+                <span>Taxes</span>
+                <span>{quote ? `₹${quote.taxes.toFixed(0)}` : '—'}</span>
               </div>
-              {display.walletApplied > 0 && (
+
+              {quote && quote.walletApplied > 0 && (
                 <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-bold">
                   <span>Wallet applied</span>
-                  <span>-₹{display.walletApplied.toFixed(0)}</span>
+                  <span>-₹{quote.walletApplied.toFixed(0)}</span>
                 </div>
               )}
+
               <div className="flex justify-between text-base font-black text-gray-900 dark:text-white pt-2 border-t border-gray-100 dark:border-slate-700">
                 <span>Amount Payable</span>
                 <span className="text-rose-600 dark:text-rose-400">
-                  ₹{display.total.toFixed(0)}
+                  {quote ? `₹${quote.finalPayable.toFixed(0)}` : '—'}
                 </span>
               </div>
+
               {quoteLoading && (
                 <p className="text-[10px] text-gray-400 text-right">Recalculating totals…</p>
               )}
             </div>
+
+            {quoteError && (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-xs font-bold text-amber-800 dark:text-amber-300 space-y-2">
+                <p>{quoteError}</p>
+                <button
+                  onClick={() => setQuoteAttempt((attempt) => attempt + 1)}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-[11px] font-extrabold"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
 
             {checkoutError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-xs font-bold dark:bg-rose-950/40 dark:border-rose-900 dark:text-rose-300">
@@ -587,25 +639,13 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
               disabled={!canPlaceOrder}
               className="w-full py-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-sm shadow-xl shadow-rose-600/30 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
             >
-              {isProcessing ? (
-                <span>Confirming Order...</span>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>
-                    {display.total <= 0
-                      ? 'Place Order'
-                      : paymentMethod === 'COD'
-                        ? `Place Order • Pay ₹${display.total.toFixed(0)} on Delivery`
-                        : `Pay ₹${display.total.toFixed(0)} & Place Order`}
-                  </span>
-                </>
-              )}
+              <CheckCircle2 className="w-5 h-5" />
+              <span>{buttonLabel()}</span>
             </button>
 
             <div className="flex items-center justify-center gap-1.5 text-[10px] font-bold text-gray-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Server-verified pricing & signed payment confirmation</span>
+              <span>Server-verified pricing &amp; signed payment confirmation</span>
             </div>
           </div>
         </div>

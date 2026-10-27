@@ -10,17 +10,13 @@ import { CartSidebar } from './components/CartSidebar';
 import { ItemModal } from './components/ItemModal';
 import { SavedAddressModal } from './components/SavedAddressModal';
 import { AuthModal } from './components/AuthModal';
-import { AICraveAssistantModal } from './components/AICraveAssistantModal';
 import { HubConflictModal } from './components/HubConflictModal';
 import { Footer } from './components/Footer';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HomeScreen } from './views/HomeScreen';
-import { RestaurantView } from './views/RestaurantView';
 import { CheckoutScreen } from './views/CheckoutScreen';
 import { OrdersScreen } from './views/OrdersScreen';
 import { ProfileScreen } from './views/ProfileScreen';
-import { MembershipScreen } from './views/MembershipScreen';
-import { DealsScreen } from './views/DealsScreen';
 import { SearchScreen } from './views/SearchScreen';
 import { MenuScreen } from './views/MenuScreen';
 import { AdminKDSView } from './views/AdminKDSView';
@@ -34,14 +30,8 @@ import { AdminUserManagementView } from './views/admin/AdminUserManagementView';
 import { AdminOrderManagementView } from './views/admin/AdminOrderManagementView';
 import { AdminRiderManagementView } from './views/admin/AdminRiderManagementView';
 import { AdminTicketsView } from './views/admin/AdminTicketsView';
-import { MOCK_USER } from './data/mockData';
 import { BrandId, MenuItem, Order, SavedAddress } from './types';
-import {
-  Bot,
-  LogOut,
-  ShieldAlert,
-  Store,
-} from 'lucide-react';
+import { LogOut, ShieldAlert, Store } from 'lucide-react';
 import {
   canAccessView,
   consoleNavFor,
@@ -60,18 +50,23 @@ export const AppContent: React.FC = () => {
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
   const [isAddressModalOpen, setIsAddressModalOpen] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
-  const [isAIModalOpen, setIsAIModalOpen] = useState<boolean>(false);
-  const [activeAddress, setActiveAddress] = useState<SavedAddress>(MOCK_USER.savedAddresses[0]);
+  const [activeAddress, setActiveAddress] = useState<SavedAddress | null>(null);
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null);
 
   // The signed-in customer's saved addresses are the source of truth. Without
   // this, checkout kept provisioning the demo address for every account.
   useEffect(() => {
     const saved = user?.savedAddresses;
-    if (!saved || saved.length === 0) return;
+    if (!saved || saved.length === 0) {
+      // Never keep a previous account's delivery address after sign-out.
+      setActiveAddress(null);
+      return;
+    }
 
     setActiveAddress((current) => {
-      const sameAddress = saved.find((address) => address.id === current.id);
+      const sameAddress = current
+        ? saved.find((address) => address.id === current.id)
+        : undefined;
       if (sameAddress) return sameAddress;
 
       return saved.find((address) => address.isDefault) || saved[0];
@@ -105,14 +100,20 @@ export const AppContent: React.FC = () => {
   const handleAuthSuccess = (loggedUser: any, token: string) => {
     if (!loggedUser || !token) return;
     login(loggedUser, token);
-    // Staff land in the console they are actually allowed to operate; a
-    // customer lands on the storefront.
-    setCurrentView(defaultViewFor(loggedUser));
+
+    // Staff who sign in from the storefront land in their console. Anyone who
+    // was mid-checkout stays there so the order flow is not lost.
+    if (isStaff(loggedUser) && currentView === 'home') {
+      setCurrentView(defaultViewFor(loggedUser));
+    }
   };
 
   const handleLogout = () => {
     logout();
     setCurrentView('home');
+    setActiveAddress(null);
+    setPlacedOrder(null);
+    setIsCartOpen(false);
   };
 
   const staff = isStaff(user);
@@ -129,7 +130,11 @@ export const AppContent: React.FC = () => {
         onOpenCart={() => setIsCartOpen(true)}
         onOpenAddressModal={() => setIsAddressModalOpen(true)}
         onOpenAuthModal={() => setIsAuthModalOpen(true)}
-        activeAddressLabel={`${activeAddress.label} • ${activeAddress.city}`}
+        activeAddressLabel={
+          activeAddress
+            ? `${activeAddress.label} • ${activeAddress.city}`
+            : 'Select delivery address'
+        }
       />
 
       {/* Staff console navigation. Customers never see this bar. */}
@@ -225,14 +230,8 @@ export const AppContent: React.FC = () => {
                 setSelectedMenuCategory(category);
                 setCurrentView('menu');
               }}
-            />
-          )}
-
-          {consoleAllowed && currentView === 'brand' && (
-            <RestaurantView
-              brandId={selectedBrandId || 'mojo-pizza'}
-              onBack={() => setCurrentView('home')}
-              onOpenItemModal={setCustomizingItem}
+              activeAddress={activeAddress}
+              onOpenAddressModal={() => setIsAddressModalOpen(true)}
             />
           )}
 
@@ -253,6 +252,7 @@ export const AppContent: React.FC = () => {
               onBack={() => setCurrentView('home')}
               onOrderPlaced={handleOrderPlaced}
               onOpenAuthModal={() => setIsAuthModalOpen(true)}
+              onOpenAddressModal={() => setIsAddressModalOpen(true)}
               activeAddress={activeAddress}
             />
           )}
@@ -269,17 +269,6 @@ export const AppContent: React.FC = () => {
               onNavigate={setCurrentView}
               onOpenAuthModal={() => setIsAuthModalOpen(true)}
             />
-          )}
-
-          {consoleAllowed && currentView === 'membership' && (
-            <MembershipScreen
-              onBack={() => setCurrentView('home')}
-              onOpenAuthModal={() => setIsAuthModalOpen(true)}
-            />
-          )}
-
-          {consoleAllowed && currentView === 'deals' && (
-            <DealsScreen onNavigate={setCurrentView} />
           )}
 
           {consoleAllowed && currentView === 'search' && (
@@ -337,17 +326,6 @@ export const AppContent: React.FC = () => {
       {/* Global Application Footer */}
       {showStorefrontChrome && <Footer onNavigate={setCurrentView} />}
 
-      {/* Floating AI Crave Assistant Trigger Button */}
-      {showStorefrontChrome && (
-        <button
-          onClick={() => setIsAIModalOpen(true)}
-          className="fixed bottom-20 right-6 sm:bottom-6 sm:right-6 z-40 px-4 py-3 rounded-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white font-extrabold text-xs shadow-xl shadow-rose-600/30 flex items-center gap-2 hover:scale-105 transition-transform"
-        >
-          <Bot className="w-4 h-4 animate-bounce" />
-          <span>Ask AI Crave</span>
-        </button>
-      )}
-
       {/* Mobile Bottom Navigation */}
       {showStorefrontChrome && (
         <MobileBottomNav
@@ -376,7 +354,7 @@ export const AppContent: React.FC = () => {
         <SavedAddressModal
           isOpen={isAddressModalOpen}
           onClose={() => setIsAddressModalOpen(false)}
-          selectedAddressId={activeAddress.id}
+          selectedAddressId={activeAddress?.id || ''}
           onSelectAddress={setActiveAddress}
         />
       )}
@@ -387,14 +365,6 @@ export const AppContent: React.FC = () => {
         onClose={() => setIsAuthModalOpen(false)}
         onSuccess={handleAuthSuccess}
       />
-
-      {/* AI Crave Assistant Modal */}
-      {showStorefrontChrome && (
-        <AICraveAssistantModal
-          isOpen={isAIModalOpen}
-          onClose={() => setIsAIModalOpen(false)}
-        />
-      )}
 
       {/* Cross-Hub Cart Conflict Modal */}
       {showStorefrontChrome && <HubConflictModal />}

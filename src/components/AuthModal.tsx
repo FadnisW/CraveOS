@@ -26,8 +26,8 @@ type Step = 'IDENTITY' | 'OTP';
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const [mode, setMode] = useState<AuthMode>('EMAIL');
   const [step, setStep] = useState<Step>('IDENTITY');
-  const [email, setEmail] = useState<string>('alex.morgan@eatclub.in');
-  const [phone, setPhone] = useState<string>('+919900011101');
+  const [email, setEmail] = useState<string>('');
+  const [phone, setPhone] = useState<string>('');
   const [otp, setOtp] = useState<string>('');
   const [demoCode, setDemoCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -62,11 +62,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         }
       } else {
         const res = await api.requestOtp(email);
-        if (res.demoOtp) {
-          setDemoCode(res.demoOtp);
-          // Auto-fill the OTP field in dev mode so user doesn't have to type it
-          setOtp(res.demoOtp);
-        }
+        // The API only returns a code when DEV_OTP_BYPASS is explicitly on.
+        // Never invent or auto-fill a code on the client.
+        if (res.demoOtp) setDemoCode(res.demoOtp);
       }
       setStep('OTP');
     } catch (err: any) {
@@ -83,10 +81,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
     try {
       if (mode === 'RIDER') {
-        const res = await api.riders.verifyOtp(
-          phone.trim(),
-          otp || demoCode || '123456',
-        );
+        const res = await api.riders.verifyOtp(phone.trim(), otp.trim());
         if (res.accessToken) {
           localStorage.setItem('eatclub_token', res.accessToken);
           // Rider tokens carry the Rider table id as `sub`; the storefront
@@ -97,7 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         return;
       }
 
-      const res = await api.verifyOtp(email, otp || demoCode || '123456');
+      const res = await api.verifyOtp(email.trim(), otp.trim());
       if (res.accessToken) {
         localStorage.setItem('eatclub_token', res.accessToken);
         onSuccess(res.user, res.accessToken);
@@ -185,8 +180,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     />
                   </div>
                   <p className="text-[10px] text-gray-400">
-                    Staff: use the email created by a super admin (for example
-                    finance.admin@eatclub.in).
+                    Staff: use the email provisioned by a super admin.
                   </p>
                 </div>
               ) : (
@@ -201,7 +195,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                       required
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+919900011101"
+                      placeholder="+91 90000 00000"
                       className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-semibold focus:outline-none focus:border-rose-500"
                     />
                   </div>
@@ -244,7 +238,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     maxLength={6}
                     value={otp}
                     onChange={(e) => setOtp(e.target.value)}
-                    placeholder={demoCode || '123456'}
+                    placeholder="6-digit code"
                     className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm font-bold tracking-widest focus:outline-none focus:border-rose-500"
                   />
                 </div>
@@ -252,7 +246,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   <div className="mt-2 p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                      <span className="text-[11px] font-semibold">Dev OTP auto-filled:</span>
+                      <span className="text-[11px] font-semibold">Development bypass code:</span>
                       <strong className="text-sm tracking-widest font-black">{demoCode}</strong>
                     </div>
                     <button

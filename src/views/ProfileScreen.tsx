@@ -1,91 +1,68 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { MOCK_USER } from '../data/mockData';
+import React from 'react';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
-import { ShieldCheck, Wallet, Share2, Copy, Gift, Clock, MapPin, User, LogOut, Check, KeyRound } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
+import { EmptyState, ErrorState } from '../components/ui/Feedback';
+import {
+  KeyRound,
+  LogOut,
+  MapPin,
+  Plus,
+  Receipt,
+  Wallet,
+} from 'lucide-react';
 
 interface ProfileScreenProps {
   onNavigate: (view: string) => void;
   onOpenAuthModal?: () => void;
+  onOpenAddressModal?: () => void;
 }
 
-export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpenAuthModal }) => {
+interface WalletResponse {
+  balanceRupees: number;
+  transactions: Array<{
+    id: string;
+    amountInPaise: number;
+    reason: string;
+    createdAt: string;
+  }>;
+}
+
+const REASON_LABELS: Record<string, string> = {
+  WELCOME_BONUS: 'Welcome credit',
+  ORDER_SPEND: 'Order payment',
+  ORDER_REFUND: 'Order refund',
+  PARTIAL_ORDER_REFUND: 'Partial order refund',
+  ADMIN_ADJUSTMENT: 'Admin adjustment',
+};
+
+export const ProfileScreen: React.FC<ProfileScreenProps> = ({
+  onNavigate,
+  onOpenAuthModal,
+  onOpenAddressModal,
+}) => {
   const { user, isAuthenticated, logout } = useUser();
-  const currentUser = user || MOCK_USER;
 
-  const [walletBalance, setWalletBalance] = useState<number>(currentUser.walletBalance || 100);
-  const [transactions, setTransactions] = useState<any[]>([]);
-  const [copied, setCopied] = useState<boolean>(false);
-  const [shared, setShared] = useState<boolean>(false);
+  const wallet = useApi<WalletResponse>(
+    () => api.getWalletBalance(user!.id),
+    [user?.id],
+    !!user?.id,
+  );
 
-  useEffect(() => {
-    async function loadWallet() {
-      if (!currentUser?.id) return;
-      try {
-        const res = await api.getWalletBalance(currentUser.id).catch(() => null);
-        if (res) {
-          setWalletBalance(res.balanceRupees ?? currentUser.walletBalance);
-          setTransactions(res.transactions || []);
-        }
-      } catch (e) {
-        console.warn('Wallet balance fetch failed:', e);
-      }
-    }
-    loadWallet();
-  }, [currentUser?.id]);
-
-  const referralCode = currentUser.referralCode || 'EATCLUB100';
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(referralCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  // Task 10 (SDD §4.2): Web Share API with clipboard fallback for desktop
-  const handleShareCode = async () => {
-    const shareData = {
-      title: 'Join me on Eatclub!',
-      text: `Use my referral code ${referralCode} and get ₹100 OFF your first order on Eatclub Cloud Kitchen!`,
-      url: 'https://eatclub.in',
-    };
-
-    try {
-      if (typeof navigator !== 'undefined' && navigator.share) {
-        await navigator.share(shareData);
-        setShared(true);
-        setTimeout(() => setShared(false), 2500);
-      } else {
-        // Desktop fallback: copy to clipboard
-        await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }
-    } catch (err: any) {
-      // Share cancelled by user or failed — silently fall back to clipboard copy
-      if (err?.name !== 'AbortError') {
-        try {
-          await navigator.clipboard.writeText(referralCode);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch (_) {}
-      }
-    }
-  };
-
-
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !user) {
     return (
       <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-6">
         <div className="w-20 h-20 rounded-3xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center font-black text-3xl mx-auto border border-rose-500/20">
-          🔑
+          <KeyRound className="w-8 h-8" />
         </div>
         <div className="space-y-2">
-          <h2 className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white">Sign In to Your Account</h2>
+          <h2 className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white">
+            Sign in to your account
+          </h2>
           <p className="text-xs sm:text-sm text-gray-500 dark:text-slate-400 max-w-md mx-auto">
-            Log in to view your order history, manage saved addresses, track your wallet balance, and unlock <strong>Flat 30% Member Discounts</strong>.
+            View your orders, saved addresses, and wallet balance.
           </p>
         </div>
 
@@ -94,119 +71,170 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onNavigate, onOpen
           className="px-8 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-sm shadow-xl shadow-rose-600/30 transition-all inline-flex items-center gap-2"
         >
           <KeyRound className="w-4 h-4" />
-          <span>Sign In with OTP</span>
+          <span>Sign in with OTP</span>
         </button>
       </div>
     );
   }
 
+  const balance = wallet.data?.balanceRupees ?? user.walletBalance;
+  const transactions = wallet.data?.transactions || [];
+
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-20">
-      
-      {/* Member Header Card */}
-      <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+    <div className="max-w-4xl mx-auto space-y-6 pb-20">
+      <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-rose-950 text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center font-black text-2xl border border-white/30">
-            {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
+          <div className="w-16 h-16 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center font-black text-2xl border border-white/20">
+            {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-extrabold">{currentUser.name}</h1>
-              <span className="px-2 py-0.5 rounded-full bg-white/20 text-xs font-bold flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-300" /> Member
-              </span>
-            </div>
-            <p className="text-xs text-rose-100">{currentUser.phone} • {currentUser.email}</p>
+            <h1 className="text-xl sm:text-2xl font-extrabold">
+              {user.name || user.email || 'Your account'}
+            </h1>
+            <p className="text-xs text-slate-300">
+              {[user.phone, user.email].filter(Boolean).join(' • ')}
+            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-3 self-stretch sm:self-auto justify-between sm:justify-end">
           <button
-            onClick={() => onNavigate('membership')}
-            className="p-3 rounded-2xl bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 text-center transition-all cursor-pointer"
+            onClick={() => onNavigate('orders')}
+            className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-extrabold inline-flex items-center gap-2"
           >
-            <span className="text-[10px] font-bold uppercase tracking-wider text-rose-100">Total Savings</span>
-            <div className="text-xl font-black text-amber-300">₹{currentUser.membershipPlan?.totalSavingsToDate || 1250} &rarr;</div>
+            <Receipt className="w-4 h-4" />
+            My orders
           </button>
           <button
             onClick={logout}
-            className="p-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white transition-colors"
-            title="Sign Out"
+            className="p-3 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white transition-colors"
+            title="Sign out"
           >
             <LogOut className="w-5 h-5" />
           </button>
         </div>
       </div>
 
-      {/* Grid: Wallet & Referral */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        
-        {/* Wallet Balance Card */}
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Wallet className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-              <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Eatclub Wallet</h3>
+              <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+                Wallet
+              </h3>
             </div>
             <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-              ₹{walletBalance}
+              ₹{balance.toFixed(2)}
             </span>
           </div>
+
           <p className="text-xs text-gray-500 dark:text-slate-400">
-            Wallet credits are automatically applied at checkout towards your food orders.
+            Wallet credits can be applied at checkout. The balance above is read
+            from your account, not estimated.
           </p>
+
+          {wallet.loading && (
+            <div className="h-16 rounded-xl bg-gray-100 dark:bg-slate-700 animate-pulse" />
+          )}
+
+          {wallet.error && (
+            <ErrorState
+              title="Could not load wallet activity"
+              message={wallet.error}
+              onRetry={() => void wallet.reload()}
+            />
+          )}
+
+          {!wallet.loading && !wallet.error && transactions.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-slate-700">
+              {transactions.slice(0, 5).map((transaction) => {
+                const rupees = transaction.amountInPaise / 100;
+                return (
+                  <div
+                    key={transaction.id}
+                    className="flex items-center justify-between gap-3 text-xs"
+                  >
+                    <span className="text-gray-600 dark:text-slate-300">
+                      {REASON_LABELS[transaction.reason] || transaction.reason}
+                    </span>
+                    <span
+                      className={
+                        rupees >= 0
+                          ? 'font-extrabold text-emerald-600 dark:text-emerald-400'
+                          : 'font-extrabold text-rose-600 dark:text-rose-400'
+                      }
+                    >
+                      {rupees >= 0 ? '+' : '−'}₹{Math.abs(rupees).toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* Referral Card */}
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Gift className="w-5 h-5 text-amber-500" />
-              <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Refer & Earn ₹100</h3>
-            </div>
-          </div>
-          <p className="text-xs text-gray-500 dark:text-slate-400">
-            Share your referral code. Friends get ₹100 OFF and you get ₹100 wallet credit!
-          </p>
-
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-gray-100 dark:bg-slate-700 text-xs font-bold gap-2">
-            <span className="tracking-widest text-gray-900 dark:text-white font-mono">{referralCode}</span>
-            <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+              Saved addresses
+            </h3>
+            {onOpenAddressModal && (
               <button
-                onClick={handleShareCode}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
+                onClick={onOpenAddressModal}
+                className="inline-flex items-center gap-1 text-[11px] font-extrabold text-rose-600 dark:text-rose-400"
               >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>{shared ? 'Shared!' : 'Share Code'}</span>
+                <Plus className="w-3.5 h-3.5" /> Manage
               </button>
-              <button onClick={handleCopyCode} className="flex items-center gap-1 text-rose-600 dark:text-rose-400 hover:underline">
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Copied!' : 'Copy'}</span>
-              </button>
-            </div>
+            )}
           </div>
-        </div>
 
-      </div>
+          {user.savedAddresses.length === 0 && (
+            <EmptyState
+              icon={MapPin}
+              title="No saved addresses"
+              description="Add a delivery address to check which hub serves you."
+              action={
+                onOpenAddressModal ? (
+                  <button
+                    onClick={onOpenAddressModal}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold"
+                  >
+                    Add address
+                  </button>
+                ) : undefined
+              }
+            />
+          )}
 
-      {/* Saved Addresses List */}
-      <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">
-        <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">Saved Addresses</h3>
-        <div className="space-y-3">
-          {MOCK_USER.savedAddresses.map((addr) => (
-            <div key={addr.id} className="p-4 rounded-2xl bg-gray-50 dark:bg-slate-800/50 border border-gray-200/60 dark:border-slate-700 flex items-start justify-between">
-              <div className="flex items-start gap-3">
-                <MapPin className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="text-xs font-extrabold uppercase text-gray-900 dark:text-white">{addr.label}</h4>
-                  <p className="text-xs text-gray-500 dark:text-slate-400">{addr.addressLine}</p>
+          {user.savedAddresses.length > 0 && (
+            <div className="space-y-2">
+              {user.savedAddresses.map((address) => (
+                <div
+                  key={address.id}
+                  className="p-3 rounded-2xl bg-gray-50 dark:bg-slate-900/60 border border-gray-200/70 dark:border-slate-700 flex items-start gap-3"
+                >
+                  <MapPin className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-extrabold uppercase text-gray-900 dark:text-white">
+                      {address.label}
+                      {address.isDefault && (
+                        <span className="ml-2 text-[9px] font-bold text-emerald-600 dark:text-emerald-400">
+                          DEFAULT
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-slate-400 truncate">
+                      {address.addressLine}
+                      {address.city ? `, ${address.city}` : ''}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </div>
-
     </div>
   );
 };

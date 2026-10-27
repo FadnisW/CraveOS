@@ -1,11 +1,13 @@
 'use client';
 
-import React, { useState } from 'react';
-import { MOCK_MENU_ITEMS, MOCK_BRANDS } from '../data/mockData';
+import React, { useEffect, useState } from 'react';
 import { MenuItem, BrandId } from '../types';
 import { useCart } from '../context/CartContext';
-import { Search, Star, Plus, Check, ArrowLeft } from 'lucide-react';
-import { motion } from 'motion/react';
+import { useUser } from '../context/UserContext';
+import { api } from '../lib/api-client';
+import { mapApiMenuItems } from '../lib/catalog-mapper';
+import { EmptyState, ErrorState, LoadingState } from '../components/ui/Feedback';
+import { Search, Plus, Check, ArrowLeft, UtensilsCrossed, SearchX } from 'lucide-react';
 
 interface SearchScreenProps {
   onBack: () => void;
@@ -19,16 +21,49 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   onSelectBrand,
 }) => {
   const [query, setQuery] = useState<string>('');
-  const { addToCart, cartItems } = useCart();
+  const [results, setResults] = useState<MenuItem[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState<boolean>(false);
 
-  const searchResults = query.trim()
-    ? MOCK_MENU_ITEMS.filter(
-        (item) =>
-          item.name.toLowerCase().includes(query.toLowerCase()) ||
-          item.description.toLowerCase().includes(query.toLowerCase()) ||
-          item.brandId.toLowerCase().includes(query.toLowerCase())
-      )
-    : [];
+  const { addToCart, cartItems } = useCart();
+  const { user } = useUser();
+
+  useEffect(() => {
+    const term = query.trim();
+
+    if (!term) {
+      setResults([]);
+      setError(null);
+      setIsLoading(false);
+      setHasSearched(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoading(true);
+    setError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const rows = await api.searchItems(term);
+        if (cancelled) return;
+        setResults(mapApiMenuItems(rows));
+        setHasSearched(true);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err?.message || 'Search is unavailable right now.');
+        setResults([]);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -44,43 +79,105 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         <Search className="w-5 h-5 text-gray-400 absolute left-4 top-3.5" />
         <input
           type="text"
-          placeholder="Search for Pizza, Biryani, Thalis, Rolls, Bowls..."
+          placeholder="Search the live menu..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(event) => setQuery(event.target.value)}
           autoFocus
           className="w-full pl-12 pr-4 py-3 rounded-2xl bg-white dark:bg-slate-800 text-sm text-gray-900 dark:text-white border border-gray-200 dark:border-slate-700 shadow-sm focus:border-rose-500 focus:outline-none"
         />
       </div>
 
-      {query.trim() && (
+      {!query.trim() && (
+        <EmptyState
+          icon={Search}
+          title="Search the menu"
+          description="Results come from the live catalogue for the hubs that are currently open."
+        />
+      )}
+
+      {query.trim() && isLoading && <LoadingState label="Searching the live menu…" />}
+
+      {query.trim() && !isLoading && error && (
+        <ErrorState title="Search failed" message={error} />
+      )}
+
+      {query.trim() && !isLoading && !error && hasSearched && results.length === 0 && (
+        <EmptyState
+          icon={SearchX}
+          title={`No matches for “${query.trim()}”`}
+          description="Try a dish, a cuisine, or a brand name."
+        />
+      )}
+
+      {query.trim() && !isLoading && !error && results.length > 0 && (
         <div className="space-y-4">
           <h2 className="text-sm font-extrabold text-gray-900 dark:text-white">
-            Search Results ({searchResults.length})
+            {results.length} result{results.length === 1 ? '' : 's'}
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {searchResults.map((item) => {
-              const isAdded = cartItems.some((ci) => ci.item.id === item.id);
+            {results.map((item) => {
+              const inCart = cartItems.some((cartItem) => cartItem.item.id === item.id);
+              const needsOptions = (item.customizationGroups?.length || 0) > 0;
+              const showMemberPrice = user?.isMember === true;
+
               return (
                 <div
                   key={item.id}
                   className="flex gap-4 p-4 rounded-2xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm"
                 >
-                  <img src={item.image} alt={item.name} className="w-24 h-24 rounded-xl object-cover" />
-                  <div className="flex-1 flex flex-col justify-between">
+                  {item.image ? (
+                    <img
+                      src={item.image}
+                      alt={item.name}
+                      className="w-24 h-24 rounded-xl object-cover"
+                    />
+                  ) : (
+                    <div className="w-24 h-24 rounded-xl bg-gray-100 dark:bg-slate-700 text-gray-400 flex items-center justify-center">
+                      <UtensilsCrossed className="w-7 h-7" />
+                    </div>
+                  )}
+
+                  <div className="flex-1 flex flex-col justify-between min-w-0">
                     <div>
-                      <span className="text-[10px] font-bold text-rose-500 uppercase">{item.brandId}</span>
-                      <h3 className="font-extrabold text-sm text-gray-900 dark:text-white">{item.name}</h3>
+                      <button
+                        onClick={() => item.brandId && onSelectBrand(item.brandId)}
+                        className="text-[10px] font-bold text-rose-500 uppercase hover:underline"
+                      >
+                        {item.brandName || item.brandId.replace(/-/g, ' ')}
+                      </button>
+                      <h3 className="font-extrabold text-sm text-gray-900 dark:text-white truncate">
+                        {item.name}
+                      </h3>
                       <p className="text-xs text-gray-500 line-clamp-1">{item.description}</p>
                     </div>
 
-                    <div className="flex items-center justify-between pt-2">
-                      <span className="font-extrabold text-sm text-gray-900 dark:text-white">₹{item.memberPrice}</span>
+                    <div className="flex items-center justify-between pt-2 gap-2">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-extrabold text-sm text-gray-900 dark:text-white">
+                          ₹{showMemberPrice ? item.memberPrice : item.mrp}
+                        </span>
+                        {showMemberPrice && item.memberPrice < item.mrp && (
+                          <span className="text-[10px] text-gray-400 line-through">₹{item.mrp}</span>
+                        )}
+                      </div>
                       <button
-                        onClick={() => addToCart(item)}
-                        className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs font-bold"
+                        onClick={() => {
+                          if (needsOptions) onOpenItemModal(item);
+                          else addToCart(item);
+                        }}
+                        disabled={!item.isAvailable}
+                        className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs font-bold disabled:opacity-40"
                       >
-                        {isAdded ? 'Added' : 'ADD +'}
+                        {inCart ? (
+                          <span className="inline-flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Added
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1">
+                            <Plus className="w-3 h-3" /> Add
+                          </span>
+                        )}
                       </button>
                     </div>
                   </div>

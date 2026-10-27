@@ -6,7 +6,6 @@ import { PrismaService } from '../prisma/prisma.service';
  * Every console (admin, hub, brand) must agree on what "collected" means:
  *  - gateway money is collected when the payment row is SUCCESS;
  *  - wallet money is collected when it was debited (synthetic `wallet` payment);
- *  - COD cash is collected only after DELIVERED;
  *  - refunds (wallet credit and gateway refunds) reduce collected revenue.
  *
  * Keeping this in one place stops the hub finance screen from reporting
@@ -26,7 +25,7 @@ export interface RevenueOrderShape {
   } | null;
 }
 
-export type PaymentGateway = 'RAZORPAY' | 'WALLET' | 'COD';
+export type PaymentGateway = 'RAZORPAY' | 'WALLET';
 
 /** Sum of wallet refunds already issued per order. */
 export async function getWalletRefundsByOrder(
@@ -66,11 +65,6 @@ export function netCollectedPaise(
       gateway = 'RAZORPAY';
       grossPaise = order.payment.amountInPaise + order.walletAppliedPaise;
     }
-  } else if (order.paymentMethod === 'COD') {
-    gateway = 'COD';
-    grossPaise =
-      order.walletAppliedPaise +
-      (order.status === 'DELIVERED' ? order.finalPaidPaise : 0);
   }
 
   const gatewayRefundedPaise = order.payment?.refundedAmountPaise ?? 0;

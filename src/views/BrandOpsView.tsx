@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
+import { ConfirmDialog } from '../components/ui/Dialog';
 import {
   AlertCircle,
   BadgeIndianRupee,
@@ -70,6 +71,8 @@ export const BrandOpsView: React.FC = () => {
   const [draft, setDraft] = useState(emptyDraft());
   const [editingItem, setEditingItem] = useState<any | null>(null);
   const [savingItem, setSavingItem] = useState<boolean>(false);
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const [deletingItem, setDeletingItem] = useState<boolean>(false);
   const [bulkPct, setBulkPct] = useState<string>('');
   const [bulkBusy, setBulkBusy] = useState<boolean>(false);
 
@@ -200,16 +203,24 @@ export const BrandOpsView: React.FC = () => {
     });
   };
 
-  const removeItem = async (item: any) => {
-    if (typeof window === 'undefined') return;
-    if (!window.confirm(`Delete ${item.name} from the menu? This cannot be undone.`)) return;
+  const removeItem = (item: any) => {
+    setDeleteTarget(item);
+  };
 
+  const confirmRemoveItem = async () => {
+    if (!deleteTarget) return;
+
+    setDeletingItem(true);
+    setError(null);
     try {
-      await api.brandOps.deleteMenuItem(brandId, item.id);
-      setMessage(`${item.name} deleted.`);
+      await api.brandOps.deleteMenuItem(brandId, deleteTarget.id);
+      setMessage(`${deleteTarget.name} deleted.`);
+      setDeleteTarget(null);
       await loadTab();
     } catch (err: any) {
       setError(err?.message || 'Could not delete this item.');
+    } finally {
+      setDeletingItem(false);
     }
   };
 
@@ -786,7 +797,7 @@ export const BrandOpsView: React.FC = () => {
                   <Metric label="Average ticket" value={`₹${finance?.avgTicketValueRupees ?? 0}`} />
                   <Metric
                     label="Basis"
-                    value="Paid or delivered COD"
+                    value="Paid orders only"
                     hint="Cancelled and rejected tickets excluded"
                   />
                 </div>
@@ -795,6 +806,23 @@ export const BrandOpsView: React.FC = () => {
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete this menu item?"
+        description={
+          deleteTarget
+            ? `“${deleteTarget.name}” will be removed from the menu. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete item"
+        tone="danger"
+        busy={deletingItem}
+        onConfirm={confirmRemoveItem}
+        onClose={() => {
+          if (!deletingItem) setDeleteTarget(null);
+        }}
+      />
     </div>
   );
 };

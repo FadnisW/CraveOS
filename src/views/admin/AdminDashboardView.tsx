@@ -298,7 +298,7 @@ export const AdminDashboardView: React.FC = () => {
                     </div>
                     <div className="text-xs text-gray-400">
                       Hub: {trip.order?.hub?.name || trip.order?.hubId} •{' '}
-                      {trip.order?.address?.addressLine || 'Stored Address'}
+                      {trip.order?.address?.addressLine || 'Address unavailable'}
                     </div>
                   </div>
 

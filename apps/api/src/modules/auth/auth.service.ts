@@ -1,4 +1,10 @@
-import { Injectable, UnauthorizedException, ForbiddenException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ForbiddenException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -37,14 +43,25 @@ export class AuthService {
     const cleanEmail = email.trim().toLowerCase();
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Store OTP in Redis with TTL — survives hot-reloads
+    // Store OTP in Redis with TTL — survives hot-reloads. Never log the code.
     await this.redis.set(this.otpKey(cleanEmail), code, 'EX', OTP_TTL_SECONDS);
-    this.logger.log(`🔑 OTP generated for ${cleanEmail}: [ ${code} ] (expires in ${OTP_TTL_SECONDS}s)`);
+    this.logger.log(`OTP generated for ${cleanEmail} (expires in ${OTP_TTL_SECONDS}s)`);
 
-    // Send email via Resend
-    await this.notificationsService.sendEmailOtp(cleanEmail, code).catch((err) => {
-      this.logger.warn(`Resend email trigger warning: ${err.message}`);
-    });
+    const delivery = await this.notificationsService.sendEmailOtp(cleanEmail, code);
+
+    if (!delivery.success && !this.isDevOtpBypassEnabled()) {
+      // Do not leave a code in Redis that the customer never received.
+      await this.redis.del(this.otpKey(cleanEmail));
+      throw new ServiceUnavailableException(
+        'We could not send the verification email. Please try again in a moment.',
+      );
+    }
+
+    if (!delivery.success) {
+      this.logger.warn(
+        `OTP email delivery failed for ${cleanEmail}; DEV_OTP_BYPASS is active so the code is returned to the client.`,
+      );
+    }
 
     return {
       success: true,
@@ -66,7 +83,7 @@ export class AuthService {
     // Fetch OTP from Redis
     const storedCode = await this.redis.get(this.otpKey(cleanEmail));
 
-    this.logger.log(`🔍 Verifying OTP for ${cleanEmail}: submitted="${code}" stored="${storedCode}"`);
+    this.logger.log(`Verifying OTP for ${cleanEmail}`);
 
     if (!storedCode || storedCode !== code) {
       throw new UnauthorizedException(

@@ -10,13 +10,10 @@ import type { AdminSubRole, UserProfile } from '../types';
  */
 export type ConsoleView =
   | 'home'
-  | 'brand'
   | 'menu'
   | 'checkout'
   | 'orders'
   | 'profile'
-  | 'membership'
-  | 'deals'
   | 'search'
   | 'admin-dashboard'
   | 'admin-platform'

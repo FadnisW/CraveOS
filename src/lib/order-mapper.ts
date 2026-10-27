@@ -84,7 +84,7 @@ const BRAND_STATUSES: BrandOrderStatus['status'][] = [
   'REJECTED',
 ];
 
-const PAYMENT_METHODS = ['UPI', 'CARD', 'WALLET', 'COD'] as const;
+const PAYMENT_METHODS = ['UPI', 'CARD', 'WALLET'] as const;
 
 function paiseToRupees(paise: number | null | undefined): number {
   return Math.round(Number(paise) || 0) / 100;
@@ -97,7 +97,7 @@ function mapAddress(address?: ApiAddress | null): SavedAddress {
       type: 'home',
       label: 'Delivery Address',
       addressLine: 'Address unavailable',
-      city: 'Bengaluru',
+      city: '',
       pincode: '',
       lat: 0,
       lng: 0,
@@ -113,7 +113,7 @@ function mapAddress(address?: ApiAddress | null): SavedAddress {
     label: address.label || 'Delivery Address',
     addressLine: address.addressLine,
     landmark: address.landmark || undefined,
-    city: address.city || 'Bengaluru',
+    city: address.city || '',
     pincode: address.pincode || '',
     lat: address.lat,
     lng: address.lng,
@@ -141,7 +141,6 @@ function mapCartItems(order: ApiOrder): CartItem[] {
           image: '',
           isVeg: true,
           category: '',
-          rating: 4.5,
           isAvailable: true,
         },
         quantity: item.quantity,
@@ -159,7 +158,7 @@ export function mapApiOrder(order: ApiOrder): Order {
     order.paymentMethod as (typeof PAYMENT_METHODS)[number],
   )
     ? (order.paymentMethod as Order['paymentMethod'])
-    : 'UPI';
+    : 'UNKNOWN';
 
   return {
     id: order.id,
@@ -188,14 +187,19 @@ export function mapApiOrder(order: ApiOrder): Order {
     couponDiscount: Number(order.discountBreakdown?.couponDiscount) || 0,
     finalPaidAmount: paiseToRupees(order.finalPaidPaise),
     paymentMethod,
-    estimatedDeliveryMins: Number(order.estimatedDeliveryMins) || 30,
+    estimatedDeliveryMins:
+      typeof order.estimatedDeliveryMins === 'number' && order.estimatedDeliveryMins > 0
+        ? order.estimatedDeliveryMins
+        : undefined,
     rider: rider
       ? {
           name: rider.name,
           phone: rider.phone,
-          rating: rider.rating ?? 5,
-          currentLat: rider.liveLat ?? 0,
-          currentLng: rider.liveLng ?? 0,
+          rating: typeof rider.rating === 'number' ? rider.rating : undefined,
+          currentLat:
+            typeof rider.liveLat === 'number' ? rider.liveLat : undefined,
+          currentLng:
+            typeof rider.liveLng === 'number' ? rider.liveLng : undefined,
         }
       : undefined,
     deliveryOtp: order.deliveryTrip?.deliveryOtp || undefined,

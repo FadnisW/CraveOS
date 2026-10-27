@@ -49,7 +49,7 @@ export const AdminRiderManagementView: React.FC = () => {
       fetchRiderData();
       setTimeout(() => setSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(err.message || 'Failed to update rider status');
+      setError(err.message || 'Failed to update rider status');
     } finally {
       setUpdating(false);
     }

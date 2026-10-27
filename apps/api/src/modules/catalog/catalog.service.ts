@@ -106,7 +106,7 @@ export class CatalogService {
                 // can derive availableHubIds[] (all hubs this brand serves)
                 brandKitchens: {
                   where: { isOpen: true },
-                  select: { hubId: true },
+                  select: { hubId: true, hub: { select: { name: true } } },
                 },
               },
             },
@@ -138,7 +138,7 @@ export class CatalogService {
               include: {
                 brandKitchens: {
                   where: { isOpen: true },
-                  select: { hubId: true },
+                  select: { hubId: true, hub: { select: { name: true } } },
                 },
               },
             },
@@ -332,7 +332,6 @@ export class CatalogService {
       lat: matchedHub.lat,
       lng: matchedHub.lng,
       serviceableBrands,
-      estimatedDeliveryMins: 22,
     };
 
     // Cache for 5 minutes (300,000 ms)

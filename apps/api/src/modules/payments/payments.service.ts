@@ -68,7 +68,7 @@ export class PaymentsService {
 
     if (order.finalPaidPaise <= 0) {
       throw new BadRequestException(
-        'This order has no gateway balance due — it is already settled by wallet or cash on delivery.',
+        'This order has no gateway balance due - it is already settled by wallet.',
       );
     }
 

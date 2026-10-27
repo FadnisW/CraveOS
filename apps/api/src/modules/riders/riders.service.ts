@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   UnauthorizedException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -41,7 +42,12 @@ export class RidersService {
   }
 
   /**
-   * Request phone OTP for Rider registration/login
+   * Request phone OTP for Rider registration/login.
+   *
+   * Riders have no email column and the platform deliberately has no SMS
+   * provider. Until rider email delivery is configured, this endpoint only
+   * works with the explicit development OTP bypass — it must never pretend to
+   * have sent a code to a fabricated address.
    */
   async registerRider(phone: string) {
     const cleanPhone = phone.trim().replace(/\s+/g, '');
@@ -49,24 +55,23 @@ export class RidersService {
       throw new BadRequestException('Invalid phone number format');
     }
 
+    if (!this.isDevOtpBypassEnabled()) {
+      throw new ServiceUnavailableException(
+        'Rider sign-in is not configured for production yet. Contact operations.',
+      );
+    }
+
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     await this.redis.set(this.otpKey(cleanPhone), code, 'EX', RIDER_OTP_TTL_SECONDS);
 
     this.logger.log(
-      `🔑 Rider OTP generated for ${cleanPhone}: [ ${code} ] (expires in ${RIDER_OTP_TTL_SECONDS}s)`,
+      `Rider OTP generated for ${cleanPhone} under DEV_OTP_BYPASS (expires in ${RIDER_OTP_TTL_SECONDS}s)`,
     );
-
-    // Send SMS / Notification trigger
-    await this.notificationsService
-      .sendEmailOtp(cleanPhone + '@rider.eatclub.in', code)
-      .catch((err) => {
-        this.logger.warn(`Rider notification trigger warning: ${err.message}`);
-      });
 
     return {
       success: true,
-      message: `OTP sent to ${cleanPhone}`,
-      demoOtp: this.isDevOtpBypassEnabled() ? code : undefined,
+      message: 'Development OTP issued',
+      demoOtp: code,
     };
   }
 
@@ -84,9 +89,7 @@ export class RidersService {
     }
 
     const storedCode = await this.redis.get(this.otpKey(cleanPhone));
-    this.logger.log(
-      `🔍 Verifying Rider OTP for ${cleanPhone}: submitted="${code}" stored="${storedCode}"`,
-    );
+    this.logger.log(`Verifying Rider OTP for ${cleanPhone}`);
 
     if (!storedCode || storedCode !== code) {
       throw new UnauthorizedException(

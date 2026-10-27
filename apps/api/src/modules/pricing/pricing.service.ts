@@ -185,7 +185,7 @@ export class PricingService {
         startsAt: { lte: now },
         endsAt: { gt: now },
       },
-    }).catch(() => [] as any[]);
+    });
 
     // Brand-proposed promotions start life as PENDING_ADMIN_APPROVAL. Only
     // approved (or legacy rules with no status) may be advertised or applied.
@@ -194,37 +194,9 @@ export class PricingService {
       return !status || status === 'APPROVED';
     });
 
-    const happyHourRule = dbRules.find((r: any) => r.type === 'HAPPY_HOUR');
-    const mealOfDayRule = dbRules.find((r: any) => r.type === 'MEAL_OF_DAY');
-
-    // Current hour & day fallback logic if DB has no rules seeded
-    const currentHour = now.getHours();
-    const currentDay = now.getDay();
-
-    const happyHourEnd = new Date(now);
-    happyHourEnd.setHours(18, 0, 0, 0);
-    if (currentHour >= 18) {
-      happyHourEnd.setDate(happyHourEnd.getDate() + 1);
-      happyHourEnd.setHours(16, 0, 0, 0);
-    }
-
-    const result = {
-      isHappyHour: happyHourRule ? true : currentHour >= 16 && currentHour < 18,
-      isWednesdayMania: currentDay === 3,
-      isLateNight: currentHour >= 23 || currentHour < 3,
-      happyHour: {
-        title: 'Happy Hours Live • Daily 4 PM - 6 PM',
-        discount: 'Flat 30% OFF + Extra 15% Cashback',
-        startsAt: happyHourRule ? happyHourRule.startsAt.toISOString() : new Date(now.setHours(16, 0, 0, 0)).toISOString(),
-        endsAt: happyHourRule ? happyHourRule.endsAt.toISOString() : happyHourEnd.toISOString(),
-      },
-      mealOfDay: {
-        title: 'MOJO 2X Loaded 10" Pizza @ ₹249',
-        mrp: 499,
-        memberPrice: 249,
-      },
-      rules: dbRules,
-    };
+    // No clock-based or hardcoded promotions. If the database has no approved
+    // rule in its window, there is no offer to show.
+    const result = { rules: dbRules };
 
     // Cache for 60 seconds
     this.offersCache = {

@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { MOCK_USER } from '../data/mockData';
 import { SavedAddress } from '../types';
 import { useCart } from '../context/CartContext';
 import { useUser } from '../context/UserContext';
@@ -21,6 +20,7 @@ import {
   Crosshair,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { ConfirmDialog } from './ui/Dialog';
 
 interface SavedAddressModalProps {
   isOpen: boolean;
@@ -55,13 +55,13 @@ function normaliseAddress(raw: any): SavedAddress {
   return {
     id: raw?.id || '',
     type: type === 'work' ? 'work' : type === 'other' ? 'other' : 'home',
-    label: raw?.label || 'Home',
+    label: raw?.label || '',
     addressLine: raw?.addressLine || '',
     landmark: raw?.landmark || undefined,
-    city: raw?.city || 'Bengaluru',
+    city: raw?.city || '',
     pincode: raw?.pincode || '',
-    lat: Number(raw?.lat) || 0,
-    lng: Number(raw?.lng) || 0,
+    lat: Number(raw?.lat),
+    lng: Number(raw?.lng),
     resolvedHubId: raw?.resolvedHubId || '',
     isDefault: !!raw?.isDefault,
   };
@@ -89,9 +89,11 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
+  const [deleteTarget, setDeleteTarget] = useState<SavedAddress | null>(null);
+  const [deleting, setDeleting] = useState<boolean>(false);
 
   // Load the real address book whenever the modal opens. Signed-out visitors
-  // keep the demo book so they can still explore the storefront.
+  // have no address book: an address can only be saved to an account.
   useEffect(() => {
     if (!isOpen) return;
 
@@ -102,11 +104,7 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
     setCoords(null);
 
     if (!isAuthenticated) {
-      const demo =
-        user?.savedAddresses && user.savedAddresses.length > 0
-          ? user.savedAddresses
-          : MOCK_USER.savedAddresses;
-      setAddresses(demo);
+      setAddresses([]);
       return;
     }
 
@@ -121,7 +119,15 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
       .list()
       .then((result) => {
         if (cancelled) return;
-        const list = (Array.isArray(result) ? result : []).map(normaliseAddress);
+        const list = (Array.isArray(result) ? result : [])
+          .map(normaliseAddress)
+          .filter(
+            (address: SavedAddress) =>
+              !!address.id &&
+              !!address.addressLine &&
+              Number.isFinite(address.lat) &&
+              Number.isFinite(address.lng),
+          );
         setAddresses(list);
       })
       .catch((err: any) => {
@@ -242,25 +248,32 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
     }
   };
 
-  const handleDelete = async (address: SavedAddress) => {
+  const handleDelete = (address: SavedAddress) => {
     if (!isAuthenticated) return;
-    if (typeof window !== 'undefined' && !window.confirm(`Delete “${address.label}”?`)) {
-      return;
-    }
+    setDeleteTarget(address);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
 
     setError(null);
+    setDeleting(true);
     try {
-      await api.addresses.remove(address.id);
-      setAddresses((prev) => prev.filter((candidate) => candidate.id !== address.id));
+      await api.addresses.remove(deleteTarget.id);
+      setAddresses((prev) => prev.filter((candidate) => candidate.id !== deleteTarget.id));
+      setDeleteTarget(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to delete this address.');
+    } finally {
+      setDeleting(false);
     }
   };
 
   if (!isOpen) return null;
 
   return (
-    <AnimatePresence>
+    <>
+      <AnimatePresence>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
@@ -459,7 +472,9 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
                   </div>
                 ) : addresses.length === 0 ? (
                   <div className="p-6 text-center text-xs text-gray-500 dark:text-slate-400">
-                    No saved addresses yet. Add one to start ordering.
+                    {isAuthenticated
+                      ? 'No saved addresses yet. Add one to start ordering.'
+                      : 'Sign in to see your saved addresses.'}
                   </div>
                 ) : (
                   addresses.map((addr) => {
@@ -530,6 +545,10 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
 
               <button
                 onClick={() => {
+                  if (!isAuthenticated) {
+                    setError('Sign in first so the address can be saved to your account.');
+                    return;
+                  }
                   setShowForm(true);
                   setError(null);
                 }}
@@ -548,5 +567,23 @@ export const SavedAddressModal: React.FC<SavedAddressModalProps> = ({
         </motion.div>
       </div>
     </AnimatePresence>
+
+    <ConfirmDialog
+      open={!!deleteTarget}
+      title="Delete this address?"
+      description={
+        deleteTarget
+          ? `“${deleteTarget.label}” will be removed from your saved addresses.`
+          : undefined
+      }
+      confirmLabel="Delete address"
+      tone="danger"
+      busy={deleting}
+      onConfirm={confirmDelete}
+      onClose={() => {
+        if (!deleting) setDeleteTarget(null);
+      }}
+    />
+    </>
   );
 };

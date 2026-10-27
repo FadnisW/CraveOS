@@ -24,13 +24,13 @@ function normaliseAddress(raw: any): SavedAddress {
   return {
     id: raw?.id || '',
     type: type === 'work' ? 'work' : type === 'other' ? 'other' : 'home',
-    label: raw?.label || 'Home',
+    label: raw?.label || '',
     addressLine: raw?.addressLine || '',
     landmark: raw?.landmark || undefined,
-    city: raw?.city || 'Bengaluru',
+    city: raw?.city || '',
     pincode: raw?.pincode || '',
-    lat: Number(raw?.lat) || 0,
-    lng: Number(raw?.lng) || 0,
+    lat: Number(raw?.lat),
+    lng: Number(raw?.lng),
     resolvedHubId: raw?.resolvedHubId || '',
     isDefault: !!raw?.isDefault,
   };
@@ -56,26 +56,30 @@ function normaliseUser(raw: any): UserProfile {
   const isMember =
     typeof raw.isMember === 'boolean' ? raw.isMember : membershipActive;
 
-  const membershipPlan =
-    raw.membershipPlan ||
-    (membership
-      ? {
-          type: membership.status === 'TRIAL' ? 'trial' : 'annual',
-          expiresAt: membershipExpiry || '',
-          totalSavingsToDate: 0,
-        }
-      : undefined);
+  // Do not label a plan the server did not return. There is no paid plan yet,
+  // so inventing "annual" from an ACTIVE status would misrepresent the account.
+  const membershipPlan = raw.membershipPlan;
 
   const walletBalance =
     typeof raw.walletBalanceRupees === 'number'
       ? raw.walletBalanceRupees
       : Math.round(Number(raw.walletBalance) || 0) / 100;
 
-  const addresses = (raw.savedAddresses || raw.addresses || []).map(normaliseAddress);
+  // Only usable address rows belong in the book. A row without coordinates or
+  // a street line cannot be delivered to and must not appear selectable.
+  const addresses = (raw.savedAddresses || raw.addresses || [])
+    .map(normaliseAddress)
+    .filter(
+      (address: SavedAddress) =>
+        !!address.id &&
+        !!address.addressLine &&
+        Number.isFinite(address.lat) &&
+        Number.isFinite(address.lng),
+    );
 
   return {
     id: raw.id,
-    name: raw.name || raw.email?.split('@')[0] || 'Member',
+    name: raw.name || '',
     email: raw.email || '',
     phone: raw.phone || '',
     role: raw.role,

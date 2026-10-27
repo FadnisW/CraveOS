@@ -7,14 +7,15 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "next lint",
+    "check:no-fakes": "node scripts/check-no-fakes.mjs",
     "db:push": "prisma db push",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "db:seed:prod": "tsx prisma/seed.prod.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "canvas-confetti": "^1.9.4",
     "lucide-react": "^0.475.0",
     "motion": "^12.43.0",

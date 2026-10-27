@@ -17,9 +17,11 @@ export interface Brand {
   logo: string;
   heroImage: string;
   themeColor: string; // Hex color for brand accent
-  rating: number;
-  totalRatings: number;
-  deliveryTimeMins: number;
+  /** Absent until the review system exists. Never invent a rating. */
+  rating?: number;
+  totalRatings?: number;
+  /** Absent until delivery time is measured. Never invent an ETA. */
+  deliveryTimeMins?: number;
   minOrderValue: number;
   categories: string[];
   isAvailable: boolean;
@@ -45,7 +47,10 @@ export interface CustomizationGroup {
 export interface MenuItem {
   id: string;
   brandId: BrandId;
+  brandName?: string;
   availableHubIds: string[]; // Hubs (cloud kitchens) that can fulfill this item
+  /** Hub display names keyed by hub id, when the API supplies them. */
+  availableHubNames?: Record<string, string>;
   name: string;
   description: string;
   mrp: number; // Regular Maximum Retail Price
@@ -54,7 +59,8 @@ export interface MenuItem {
   isVeg: boolean;
   isBestseller?: boolean;
   category: string;
-  rating: number;
+  /** Absent until the review system exists. Never invent a rating. */
+  rating?: number;
   dietType?: 'VEG' | 'NON_VEG' | 'EGG' | 'JAIN';
   spiceLevel?: number;
   gstPct?: number;
@@ -166,14 +172,16 @@ export interface Order {
   walletDiscount: number;
   couponDiscount: number;
   finalPaidAmount: number;
-  paymentMethod: 'UPI' | 'CARD' | 'WALLET' | 'COD';
-  estimatedDeliveryMins: number;
+  paymentMethod: 'UPI' | 'CARD' | 'WALLET' | 'UNKNOWN';
+  /** Absent when the server could not compute a delivery estimate. */
+  estimatedDeliveryMins?: number;
   rider?: {
     name: string;
     phone: string;
-    rating: number;
-    currentLat: number;
-    currentLng: number;
+    /** Absent until a real review flow collects rider ratings. */
+    rating?: number;
+    currentLat?: number;
+    currentLng?: number;
   };
   /** Customer-only handover code, present once the rider has picked up. */
   deliveryOtp?: string | null;

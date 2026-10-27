@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Patch, Body, Post, Request } from '@nestjs/common';
+import { Controller, Get, Param, Query, Patch, Body, Post, Request, BadRequestException } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles, AdminSubRoles } from '../../common/decorators/roles.decorator';
@@ -53,6 +53,11 @@ export class CatalogController {
   @Post('serviceability/resolve')
   @Public()
   async resolveServiceability(@Body('lat') lat: number, @Body('lng') lng: number) {
-    return this.catalogService.resolveHubByCoords(lat || 12.9121, lng || 77.6445);
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
+      throw new BadRequestException('lat and lng are required to check delivery serviceability');
+    }
+    return this.catalogService.resolveHubByCoords(parsedLat, parsedLng);
   }
 }

@@ -1,221 +1,150 @@
-<div align="center">
+# CraveOS
 
-  <h1>🍽️ CraveOS</h1>
-  <p><b>Multi-Brand Cloud-Kitchen Commerce Platform & Delivery Engine</b></p>
-  <p><i>One Cart. Multiple In-House Brands. Single Payment & Unified 25-Min Delivery.</i></p>
+Multi-brand cloud-kitchen commerce platform: a customer storefront plus
+operator consoles for platform admins, hub managers, brand teams and riders.
 
-  <div>
-    <a href="https://github.com/FadnisW/CraveOS/actions/workflows/ci.yml">
-      <img src="https://img.shields.io/github/actions/workflow/status/FadnisW/CraveOS/ci.yml?branch=main&style=for-the-badge&logo=github&logoColor=white&color=00C853" alt="CI Status" />
-    </a>
-    <img src="https://img.shields.io/badge/Next.js-14.2-black?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js" />
-    <img src="https://img.shields.io/badge/NestJS-10.0-E0234E?style=for-the-badge&logo=nestjs&logoColor=white" alt="NestJS" />
-    <img src="https://img.shields.io/badge/Prisma-5.18-2D3748?style=for-the-badge&logo=prisma&logoColor=white" alt="Prisma" />
-    <img src="https://img.shields.io/badge/PostgreSQL-16.0-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" />
-    <img src="https://img.shields.io/badge/Redis-7.0-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis" />
-  </div>
+The project is in an active truth-reset phase. Every customer-visible claim
+must trace `UI -> API -> database row -> verification`. `docs/FEATURES.md` is
+the single source of truth for what is actually built, and
+`npm run check:no-fakes` fails the build when a mock, invented rating, fake ETA
+or demo fallback is reintroduced.
 
-  <br />
+## What is live
 
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-key-features">Key Features</a> •
-  <a href="#-tech-stack">Tech Stack</a> •
-  <a href="#-getting-started">Getting Started</a> •
-  <a href="#-monorepo-structure">Structure</a> •
-  <a href="#-deployment">Deployment</a>
+| Area | Status |
+| --- | --- |
+| Brand and menu catalogue from PostgreSQL | Live |
+| Address book and hub serviceability (point-in-polygon) | Live |
+| Multi-brand cart with per-hub conflict handling | Live |
+| Server-side pricing quote (delivery, packaging, 5% GST) | Live |
+| UPI / card via Razorpay, full wallet payment | Live (Razorpay test keys locally) |
+| Email OTP sign-in via Resend | Live when `RESEND_API_KEY` is configured |
+| Order fan-out to per-brand kitchen tickets | Live |
+| Kitchen display, dispatch, rider handoff and delivery OTP | Live |
+| Wallet balance and append-only wallet ledger | Live |
+| Brand menu management, stock/86-ing, analytics and finance | Live |
+| Support ticket desk for operators | Live |
+| Platform admin: staff, hubs, brands, finance, promotions, audit | Live |
 
-</div>
+## Not built yet
 
----
+These surfaces are deliberately hidden or absent. Do not add navigation to
+them until the underlying flow exists:
 
-## ⚡ Executive Overview
+- Paid membership purchase, renewal or cancellation (new users currently get a
+  real 30-day trial membership row; there is no purchase flow).
+- Referral attribution or rewards. `User.referralCode` exists but nothing
+  consumes it.
+- Customer-facing promotions or Deals. A generic promotion engine is planned;
+  only admin approval of brand-proposed rules exists today.
+- Reviews, ratings and rider scores. Ratings are not displayed anywhere.
+- Customer self-service order cancellation (the API exists; no button).
+- Customer support ticket form (the API exists; only the operator desk exists).
+- Production rider sign-in. Rider OTP requests return `503` outside the
+  explicit development bypass because there is no rider email channel yet.
+- ONDC integration.
+- Live rider GPS map. The order screen refreshes status from the server; it
+  does not draw a map or invent coordinates.
 
-**CraveOS** is a production-grade multi-brand cloud-kitchen commerce platform engineered to operate virtual restaurant portfolios (such as BOX8, MOJO Pizza, LeanCrust, ZAZA Mughal Biryani, Mealful Rolls, WeFit Bowls, NH1 Bowls, and Itminaan Matka Biryani) physically co-located in shared **Cloud-Kitchen Hubs**.
-
-Unlike traditional food delivery aggregators (e.g., Zomato, Swiggy) that aggregate third-party restaurants with separate pickups, CraveOS enables customers to **mix dishes from multiple distinct food brands into a single cart**, with **one checkout**, **zero delivery/packaging/platform fees**, and **a single consolidated delivery trip**.
-
----
-
-## 🚀 Key Features
-
-| Feature | Description |
-| :--- | :--- |
-| **🛍️ Multi-Brand Cart** | Mix items from 8+ in-house brands (Pizza, Biryani, Bowls, Rolls) into a single cart. |
-| **⚡ Atomic Order Fan-Out** | Server-side split of 1 customer `Order` into N `BrandOrder` entries routed to respective Kitchen Display Systems (KDS) instantly. |
-| **💎 EatClub-Style Membership** | Always-on flat percentage discounts & ₹0 packaging, platform, and delivery fees for subscribed members. |
-| **⏱️ Hyperlocal Serviceability** | Sub-200ms spatial geofence matching (`Hub.servicePolygon`) & drive-time ETA calculations via Google Maps Routes API. |
-| **🏷️ Time-Bound Offer Engine** | Dynamic rules for **Happy Hours** (4–6 PM @ ₹99) and **Meal of the Day** rails computed server-side per time window. |
-| **👛 Append-Only Wallet Ledger** | Immutable audit trail for cashbacks, promotional grants, and referral earnings auto-applied at checkout. |
-| **📡 Real-Time Order Timeline** | Sub-second WebSocket order state tracking and live rider GPS updates on an interactive map. |
-
----
-
-## 🏗️ Architecture
-
-CraveOS is structured as a **Dual-Deployed Workspace**:
-1. **Frontend PWA Storefront** (`apps/web`): Next.js 14 App Router deployed on **Vercel Edge**.
-2. **Backend API & Async Worker** (`apps/api`): NestJS Modular Monolith deployed on **Render** (Web Service + BullMQ Worker).
-
-```mermaid
-flowchart TD
-    subgraph Client ["Frontend Storefront (Vercel Edge Network)"]
-        A[Next.js PWA / App Router]
-    end
-
-    subgraph Backend ["Backend API & Dispatch (Render Web Service)"]
-        B[NestJS API Gateway]
-        C[Catalog & Serviceability Engine]
-        D[Cart & Multi-Brand Fan-Out]
-        E[Membership & Pricing Engine]
-        F[Logistics & Dispatch Gateway]
-    end
-
-    subgraph Data ["Data Layer (Render Managed Storage)"]
-        G[(PostgreSQL 16\nPrisma ORM)]
-        H[(Redis 7 / BullMQ\nKey-Value Cache)]
-    end
-
-    subgraph External ["Managed Cloud APIs"]
-        I[Razorpay\nPayments]
-        J[Resend\nHTML Email Auth]
-        K[Cloudinary\nMedia CDN]
-        L[Google Maps\nGeocoding & Routes]
-    end
-
-    A <-->|REST / JSON & WebSockets| B
-    B --> C & D & E & F
-    C & D & E & F <-->|Prisma Queries| G
-    D & F <-->|Queue Jobs & Cache| H
-    B <--> I & J & K & L
-```
-
----
-
-## 🛠️ Tech Stack
-
-<table align="center">
-  <tr>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/nextjs/nextjs-original.svg" width="48" height="48" alt="Next.js" /><br />
-      <b>Next.js 14</b><br />
-      <sub>PWA & Edge Storefront</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/nestjs/nestjs-original.svg" width="48" height="48" alt="NestJS" /><br />
-      <b>NestJS 10</b><br />
-      <sub>Modular Monolith</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/prisma/prisma-original.svg" width="48" height="48" alt="Prisma" /><br />
-      <b>Prisma ORM</b><br />
-      <sub>Type-Safe DB Layer</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/postgresql/postgresql-original.svg" width="48" height="48" alt="PostgreSQL" /><br />
-      <b>PostgreSQL 16</b><br />
-      <sub>Master Relational DB</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/redis/redis-original.svg" width="48" height="48" alt="Redis" /><br />
-      <b>Redis 7 & BullMQ</b><br />
-      <sub>Queues & Caching</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/tailwindcss/tailwindcss-original.svg" width="48" height="48" alt="Tailwind CSS" /><br />
-      <b>Tailwind CSS</b><br />
-      <sub>Design System</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/typescript/typescript-original.svg" width="48" height="48" alt="TypeScript" /><br />
-      <b>TypeScript</b><br />
-      <sub>End-to-End Safety</sub>
-    </td>
-    <td align="center" width="160">
-      <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/docker/docker-original.svg" width="48" height="48" alt="Docker" /><br />
-      <b>Docker Compose</b><br />
-      <sub>Local Parity</sub>
-    </td>
-  </tr>
-</table>
-
----
-
-## 📂 Monorepo Structure
+## Architecture
 
 ```
-craveos/
-├── .github/
-│   └── workflows/          # GitHub Actions CI/CD Pipeline
-├── apps/
-│   ├── web/                # Next.js 14+ PWA Storefront (Vercel)
-│   └── api/                # NestJS API Gateway & BullMQ Worker (Render)
-├── packages/
-│   └── shared-types/       # Shared TypeScript Interfaces, DTOs & Schemas
-├── prisma/
-│   ├── schema.prisma       # Master Database Schema
-│   └── seed.ts             # Hubs, Brands, Menus & Membership Seeder
-├── prototype/              # React Prototype Reference Implementation
-├── docker-compose.yml       # Local Dev Infrastructure (Postgres 16 + Redis 7)
-└── package.json            # Monorepo Workspace Root Configuration
+Browser
+  └── Next.js storefront (repo root, src/)        http://localhost:3000
+        └── REST + WebSocket
+              └── NestJS API (apps/api)           http://localhost:4000/api/v1
+                    ├── PostgreSQL 16 via Prisma
+                    └── Redis 7 (OTP store, caches)
 ```
 
----
+- Storefront: Next.js 16 (App Router), React 19, Tailwind CSS 4.
+- API: NestJS 10, Prisma 5.22, Socket.IO, BullMQ.
+- Payments: Razorpay. Email: Resend. No SMS or WhatsApp provider.
+- Local infrastructure: Docker Compose for PostgreSQL and Redis.
 
-## 💻 Getting Started
+## Local setup
 
-### Prerequisites
-- **Node.js**: `v20.x` or higher
-- **npm**: `v10.x` or higher
-- **Docker Desktop**: Running locally for PostgreSQL & Redis
+Prerequisites: Node.js 20+, npm 10+, Docker Desktop.
 
-### 1. Clone the Repository
 ```bash
-git clone https://github.com/FadnisW/CraveOS.git
-cd CraveOS
-```
-
-### 2. Install Dependencies
-```bash
-npm install
-```
-
-### 3. Spin Up Local Infrastructure
-```bash
+# 1. Start PostgreSQL and Redis
 docker-compose up -d
-```
 
-### 4. Run Prisma Migrations & Seed Database
-```bash
-npx prisma migrate dev --name init
-npx prisma db seed
-```
+# 2. Configure the API
+copy .env.example .env
+# Fill in DATABASE_URL, REDIS_URL, JWT_SECRET, RAZORPAY_* and RESEND_API_KEY.
+# For local sign-in without email, set DEV_OTP_BYPASS=true.
 
-### 5. Launch Development Environment
-```bash
+# 3. Install and prepare the database
+npm install
+npx prisma generate
+npx prisma db push
+
+# 4. Seed the DEVELOPMENT database (demo brands, menu, staff, riders)
+npm run db:seed
+
+# 5. Start the API
+cd apps/api
+npm install
+npm run dev
+
+# 6. Start the storefront (new terminal, repo root)
 npm run dev
 ```
-- **Storefront (Next.js)**: `http://localhost:3000`
-- **Backend API (NestJS)**: `http://localhost:4000/api/v1`
-- **Prisma Studio**: `npx prisma studio` (`http://localhost:5555`)
 
----
+`npm run db:seed` refuses to run when `NODE_ENV=production` unless
+`ALLOW_DEV_SEED=true` is set explicitly. It creates demo accounts and fixture
+orders/riders and must never touch a production database.
 
-## 🚢 Deployment Architecture
+### Production bootstrap
 
-- **Frontend App**: Deployed automatically to **Vercel** on push to `main` or `staging`.
-- **Backend API**: Deployed as a **Render Web Service** with `npx prisma migrate deploy` pre-deploy step.
-- **Background Worker**: Deployed as a **Render Background Worker** process executing BullMQ queue jobs for order fan-out and notification delivery.
+Production gets exactly one seeded row: the first super-admin. Hubs, brands,
+menus, riders and customers are created through the operator consoles.
 
----
+```bash
+# NODE_ENV=production, plus:
+# SUPER_ADMIN_EMAIL, SUPER_ADMIN_PHONE, SUPER_ADMIN_NAME (optional)
+npm run db:seed:prod
+```
 
-## 📜 License
+## Verification
 
-This project is licensed under the [MIT License](LICENSE).
+```bash
+npm run check:no-fakes     # feature registry + banned fake patterns
+npx tsc --noEmit           # storefront types
+cd apps/api && npx tsc --noEmit
+npm run build              # production storefront build
+```
 
----
+The no-fakes check runs first in CI. A feature that is not backed by the API
+and database must be marked `API`, `HIDDEN`, `PLANNED` or `REMOVED` in
+`docs/FEATURES.md` and must not be reachable from the UI.
 
-<div align="center">
-  <sub>Built with ❤️ for multi-brand cloud-kitchen scale. Engineered by <b>FadnisW</b>.</sub>
-</div>
+## Launch gates
+
+Before taking real money, `docs/FEATURES.md` requires:
+
+1. Legal identity, FSSAI licence, GSTIN, registered address and grievance
+   officer are real values, not `{{PLACEHOLDER}}` tokens.
+2. Refund, cancellation, shipping and terms pages are reviewed and published.
+3. Razorpay live keys and webhook secret are configured.
+4. `DEV_OTP_BYPASS` is off.
+5. Resend has a verified sending domain in `RESEND_FROM_EMAIL`.
+6. Rider sign-in has a real delivery channel.
+7. Database backups and restore drills are in place.
+8. Every deploy has a tested rollback path.
+
+## Repository layout
+
+```
+src/                 Next.js storefront and operator consoles
+apps/api/            NestJS API, WebSocket gateway and workers
+prisma/              Schema, development seed and production bootstrap
+scripts/             no-fakes guard
+docs/FEATURES.md     Feature registry and launch gates
+prototype/           Static design reference (not shipped)
+```
+
+## License
+
+MIT

@@ -233,7 +233,9 @@ export const HubOpsView: React.FC<{ onNavigate?: (view: string) => void }> = ({ 
           <div>
             <h1 className="text-xl font-extrabold">Hub Operations Console</h1>
             <p className="text-xs text-slate-400">
-              {selectedHub ? `${selectedHub.name} • ${selectedHub.city || 'Bengaluru'}` : 'No hub selected'}
+              {selectedHub
+                ? [selectedHub.name, selectedHub.city].filter(Boolean).join(' • ')
+                : 'No hub selected'}
             </p>
           </div>
         </div>
@@ -350,8 +352,10 @@ export const HubOpsView: React.FC<{ onNavigate?: (view: string) => void }> = ({ 
                   )}
                 </div>
                 <div className="mt-4 text-xs text-gray-500 dark:text-slate-400">
-                  Operating hours: {dashboard?.hub?.operatingHoursStart || '08:00'} –{' '}
-                  {dashboard?.hub?.operatingHoursEnd || '03:00'}
+                  Operating hours:{' '}
+                  {dashboard?.hub?.operatingHoursStart && dashboard?.hub?.operatingHoursEnd
+                    ? `${dashboard.hub.operatingHoursStart} – ${dashboard.hub.operatingHoursEnd}`
+                    : 'Not set'}
                 </div>
               </div>
             </div>
@@ -611,10 +615,10 @@ export const HubOpsView: React.FC<{ onNavigate?: (view: string) => void }> = ({ 
               </div>
               <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-gray-100 dark:border-slate-800">
                 <div className="text-[10px] font-black uppercase tracking-wider text-gray-400">
-                  Wallet / COD
+                  Wallet
                 </div>
                 <div className="text-lg font-black text-gray-900 dark:text-white">
-                  {rupees(finance?.byGateway?.WALLET)} / {rupees(finance?.byGateway?.COD)}
+                  {rupees(finance?.byGateway?.WALLET)}
                 </div>
               </div>
             </div>

@@ -7,8 +7,24 @@ on:
     branches: [ main, staging, develop ]
 
 jobs:
+  no-fakes:
+    name: 🚫 No Fake Surfaces
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check Feature Registry & Banned Patterns
+        run: node scripts/check-no-fakes.mjs
+
   lint-and-typecheck:
     name: 🔍 Lint & Workspace Typecheck
+    needs: no-fakes
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository

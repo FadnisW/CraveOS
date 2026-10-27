@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { CartItem, MenuItem, CartItemOption, Coupon } from '../types';
+import { CartItem, MenuItem, CartItemOption } from '../types';
 
 export interface HubConflictInfo {
   newItem: MenuItem;
@@ -21,37 +21,39 @@ interface CartContextType {
   removeFromCart: (cartItemId: string) => void;
   updateQuantity: (cartItemId: string, newQuantity: number) => void;
   clearCart: () => void;
-  appliedCoupon: Coupon | null;
-  applyCoupon: (code: string) => boolean;
-  removeCoupon: () => void;
-  useWallet: boolean;
-  setUseWallet: (use: boolean) => void;
-  
+
   // Hub conflict state
   pendingConflict: HubConflictInfo | null;
   resolveConflict: (clearAndSwitch: boolean) => void;
   setPendingConflict: (conflict: HubConflictInfo | null) => void;
-  
-  // Pricing metrics
+
+  /**
+   * Item count and MRP only. Member pricing, coupons, delivery, packaging and
+   * taxes are all decided by the server quote at checkout — the cart must not
+   * guess at them, because a guess the server disagrees with is a fake total.
+   */
   mrpTotal: number;
-  memberSavings: number;
-  subtotalAfterMemberDiscount: number;
-  couponDiscount: number;
-  deliveryFee: number;
-  packagingFee: number;
-  platformFee: number;
-  taxes: number;
-  finalTotal: number;
   itemCount: number;
   distinctBrandsCount: number;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
+function optionsKey(selectedOptions: CartItemOption[]) {
+  return selectedOptions.map((option) => option.optionId).sort().join('-');
+}
+
+function unitPriceFor(item: MenuItem, selectedOptions: CartItemOption[]) {
+  const optionsExtraCost = selectedOptions.reduce((sum, option) => sum + option.price, 0);
+  return item.mrp + optionsExtraCost;
+}
+
 export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // No default hub. An unpinned cart is honest: the hub is resolved from the
+  // delivery address when the customer picks one.
   const [pinnedHubId, setPinnedHubId] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return 'hub-hsr-01';
-    return localStorage.getItem('eatclub_pinned_hub') || 'hub-hsr-01';
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('eatclub_pinned_hub') || null;
   });
 
   const [pendingConflict, setPendingConflict] = useState<HubConflictInfo | null>(null);
@@ -60,11 +62,15 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Guard against SSR — localStorage is only available in the browser
     if (typeof window === 'undefined') return [];
     const saved = localStorage.getItem('eatclub_cart');
-    return saved ? JSON.parse(saved) : [];
-  });
+    if (!saved) return [];
 
-  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
-  const [useWallet, setUseWallet] = useState<boolean>(false);
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
 
   useEffect(() => {
     localStorage.setItem('eatclub_cart', JSON.stringify(cartItems));
@@ -73,47 +79,54 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (pinnedHubId) {
       localStorage.setItem('eatclub_pinned_hub', pinnedHubId);
+    } else {
+      localStorage.removeItem('eatclub_pinned_hub');
     }
   }, [pinnedHubId]);
 
-  const addToCart = (item: MenuItem, quantity = 1, selectedOptions: CartItemOption[] = []): boolean => {
-    // 1. Cross-Hub Conflict Guard
-    // An item is compatible with the pinned hub if its availableHubIds includes that hub.
-    // Only fire a conflict when the item truly cannot be served from the current hub.
-    const servedByPinnedHub = pinnedHubId && item.availableHubIds.includes(pinnedHubId);
-    // Resolve the best hub for this item: prefer the currently pinned hub, else fall back to the first declared hub
-    const itemHub = servedByPinnedHub
-      ? pinnedHubId!
-      : item.availableHubIds[0] || pinnedHubId || 'hub-hsr-01';
+  const addToCart = (
+    item: MenuItem,
+    quantity = 1,
+    selectedOptions: CartItemOption[] = [],
+  ): boolean => {
+    // Cross-hub conflict guard. An item is compatible with the pinned hub when
+    // its live hub list includes that hub. If the item has no live hub at all
+    // the cart still accepts it; checkout will surface the server's error.
+    const servedByPinnedHub = !!pinnedHubId && item.availableHubIds.includes(pinnedHubId);
+    const itemHub = servedByPinnedHub ? pinnedHubId : item.availableHubIds[0] || null;
 
-    if (cartItems.length > 0 && pinnedHubId && !servedByPinnedHub && item.availableHubIds.length > 0) {
+    if (
+      cartItems.length > 0 &&
+      pinnedHubId &&
+      !servedByPinnedHub &&
+      item.availableHubIds.length > 0 &&
+      itemHub
+    ) {
       setPendingConflict({
         newItem: item,
         newItemQuantity: quantity,
         newItemOptions: selectedOptions,
         currentHubId: pinnedHubId,
         newHubId: itemHub,
+        currentHubName: cartItems[0]?.item.availableHubNames?.[pinnedHubId],
+        newHubName: item.availableHubNames?.[itemHub],
       });
       return false;
     }
 
-    // Auto-pin hub if cart was empty or unpinned
+    // Pin the first real hub only when the cart is empty.
     if (cartItems.length === 0 && item.availableHubIds.length > 0) {
-      // Pin to the first available hub (or keep existing pinned hub if already compatible)
       if (!pinnedHubId || !item.availableHubIds.includes(pinnedHubId)) {
         setPinnedHubId(item.availableHubIds[0]);
       }
     }
 
-    // Generate unique ID for this line item + customization combination
-    const optionsKey = selectedOptions.map(o => o.optionId).sort().join('-');
-    const cartItemId = `${item.id}-${optionsKey}`;
+    const key = optionsKey(selectedOptions);
+    const cartItemId = `${item.id}-${key}`;
+    const unitPrice = unitPriceFor(item, selectedOptions);
 
-    const optionsExtraCost = selectedOptions.reduce((acc, opt) => acc + opt.price, 0);
-    const unitPrice = item.memberPrice + optionsExtraCost;
-
-    setCartItems(prev => {
-      const existingIndex = prev.findIndex(ci => ci.cartItemId === cartItemId);
+    setCartItems((prev) => {
+      const existingIndex = prev.findIndex((ci) => ci.cartItemId === cartItemId);
       if (existingIndex > -1) {
         const updated = [...prev];
         const newQty = updated[existingIndex].quantity + quantity;
@@ -129,7 +142,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...prev,
         {
           cartItemId,
-          item,          // store original item with full availableHubIds array
+          item,
           quantity,
           selectedOptions,
           unitPrice,
@@ -146,34 +159,26 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (clearAndSwitch) {
       const { newItem, newItemQuantity, newItemOptions, newHubId } = pendingConflict;
-      // Clear cart, pin to the new hub, and add the pending item
-      setPinnedHubId(newHubId);
-      const optionsKey = newItemOptions.map(o => o.optionId).sort().join('-');
-      const cartItemId = `${newItem.id}-${optionsKey}`;
-      const optionsExtraCost = newItemOptions.reduce((acc, opt) => acc + opt.price, 0);
-      const unitPrice = newItem.memberPrice + optionsExtraCost;
+      const unitPrice = unitPriceFor(newItem, newItemOptions);
 
+      setPinnedHubId(newHubId);
       setCartItems([
         {
-          cartItemId,
-          item: newItem,   // preserve full availableHubIds array
+          cartItemId: `${newItem.id}-${optionsKey(newItemOptions)}`,
+          item: newItem,
           quantity: newItemQuantity,
           selectedOptions: newItemOptions,
           unitPrice,
           totalPrice: unitPrice * newItemQuantity,
         },
       ]);
-      setAppliedCoupon(null);
     }
 
     setPendingConflict(null);
   };
 
   const removeFromCart = (cartItemId: string) => {
-    setCartItems(prev => {
-      const nextItems = prev.filter(ci => ci.cartItemId !== cartItemId);
-      return nextItems;
-    });
+    setCartItems((prev) => prev.filter((ci) => ci.cartItemId !== cartItemId));
   };
 
   const updateQuantity = (cartItemId: string, newQuantity: number) => {
@@ -182,71 +187,22 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    setCartItems(prev =>
-      prev.map(ci => {
-        if (ci.cartItemId === cartItemId) {
-          return {
-            ...ci,
-            quantity: newQuantity,
-            totalPrice: ci.unitPrice * newQuantity,
-          };
-        }
-        return ci;
-      })
+    setCartItems((prev) =>
+      prev.map((ci) =>
+        ci.cartItemId === cartItemId
+          ? { ...ci, quantity: newQuantity, totalPrice: ci.unitPrice * newQuantity }
+          : ci,
+      ),
     );
   };
 
   const clearCart = () => {
     setCartItems([]);
-    setAppliedCoupon(null);
   };
 
-  const applyCoupon = (code: string): boolean => {
-    // Basic coupon mock evaluation
-    if (code.toUpperCase() === 'EATCLUB100') {
-      setAppliedCoupon({
-        code: 'EATCLUB100',
-        description: 'Flat ₹100 OFF',
-        discountType: 'flat',
-        discountValue: 100,
-        minOrderValue: 399,
-      });
-      return true;
-    }
-    return false;
-  };
-
-  const removeCoupon = () => {
-    setAppliedCoupon(null);
-  };
-
-  // Calculations
   const itemCount = cartItems.reduce((acc, ci) => acc + ci.quantity, 0);
-
-  const distinctBrands = new Set(cartItems.map(ci => ci.item.brandId));
-  const distinctBrandsCount = distinctBrands.size;
-
-  const mrpTotal = cartItems.reduce((acc, ci) => {
-    const optsPrice = ci.selectedOptions.reduce((a, o) => a + o.price, 0);
-    return acc + (ci.item.mrp + optsPrice) * ci.quantity;
-  }, 0);
-
-  const subtotalAfterMemberDiscount = cartItems.reduce((acc, ci) => acc + ci.totalPrice, 0);
-
-  const memberSavings = mrpTotal - subtotalAfterMemberDiscount;
-
-  let couponDiscount = 0;
-  if (appliedCoupon && subtotalAfterMemberDiscount >= appliedCoupon.minOrderValue) {
-    couponDiscount = appliedCoupon.discountValue;
-  }
-
-  // CraveOS Guarantee: ₹0 Delivery, ₹0 Packaging, ₹0 Platform Fee for Eatclub Members
-  const deliveryFee = 0;
-  const packagingFee = 0;
-  const platformFee = 0;
-  const taxes = Math.round(subtotalAfterMemberDiscount * 0.05); // 5% GST
-
-  const finalTotal = Math.max(0, subtotalAfterMemberDiscount - couponDiscount + taxes);
+  const distinctBrandsCount = new Set(cartItems.map((ci) => ci.item.brandId)).size;
+  const mrpTotal = cartItems.reduce((acc, ci) => acc + ci.totalPrice, 0);
 
   return (
     <CartContext.Provider
@@ -258,23 +214,10 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
         removeFromCart,
         updateQuantity,
         clearCart,
-        appliedCoupon,
-        applyCoupon,
-        removeCoupon,
-        useWallet,
-        setUseWallet,
         pendingConflict,
         resolveConflict,
         setPendingConflict,
         mrpTotal,
-        memberSavings,
-        subtotalAfterMemberDiscount,
-        couponDiscount,
-        deliveryFee,
-        packagingFee,
-        platformFee,
-        taxes,
-        finalTotal,
         itemCount,
         distinctBrandsCount,
       }}

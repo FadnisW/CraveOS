@@ -10,16 +10,12 @@ export const HubConflictModal: React.FC = () => {
 
   if (!pendingConflict) return null;
 
-  const { newItem, currentHubId, newHubId } = pendingConflict;
+  const { newItem, currentHubId, newHubId, currentHubName, newHubName } = pendingConflict;
 
-  const formatHubName = (id: string) => {
-    if (id === 'hub-hsr-01') return 'HSR Layout Cloud Hub #01';
-    if (id === 'hub-indiranagar-02') return 'Indiranagar Cloud Hub #02';
-    return id.replace('hub-', '').replace(/-/g, ' ').toUpperCase();
-  };
-
-  const currentHubName = formatHubName(currentHubId);
-  const newHubName = formatHubName(newHubId);
+  // Hub names come from the API when available. Never prettify an id into a
+  // name that is not in the database; show the id only as a last resort.
+  const currentLabel = currentHubName || currentHubId;
+  const newLabel = newHubName || newHubId;
 
   return (
     <AnimatePresence>
@@ -39,10 +35,10 @@ export const HubConflictModal: React.FC = () => {
               </div>
               <div>
                 <h2 className="text-base sm:text-lg font-black tracking-tight">
-                  Single Cloud Hub Guarantee
+                  One kitchen hub per order
                 </h2>
                 <p className="text-xs text-gray-500 dark:text-slate-400">
-                  CraveOS single-rider delivery rule
+                  All items are prepared at the same kitchen hub
                 </p>
               </div>
             </div>
@@ -60,12 +56,13 @@ export const HubConflictModal: React.FC = () => {
           <div className="p-4 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 space-y-2 text-xs leading-relaxed">
             <p className="text-amber-900 dark:text-amber-200 font-medium">
               Your cart currently contains <strong>{cartItems.length} item(s)</strong> prepared at{' '}
-              <span className="font-bold underline decoration-amber-500">{currentHubName}</span>.
+              <span className="font-bold underline decoration-amber-500">{currentLabel}</span>.
             </p>
             <p className="text-amber-800 dark:text-amber-300/90">
               <strong>{newItem.name}</strong> is only serviced by{' '}
-              <span className="font-bold underline decoration-amber-500">{newHubName}</span>.
-              To guarantee unified 22-minute delivery in a single trip, all items in your cart must come from the same kitchen hub.
+              <span className="font-bold underline decoration-amber-500">{newLabel}</span>.
+              All items in one order must come from the same kitchen hub so they can be
+              prepared and delivered together.
             </p>
           </div>
 
@@ -77,7 +74,7 @@ export const HubConflictModal: React.FC = () => {
               </span>
               <div className="flex items-center gap-1.5 font-bold text-gray-800 dark:text-slate-200">
                 <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                <span className="truncate">{currentHubName}</span>
+                <span className="truncate">{currentLabel}</span>
               </div>
             </div>
 
@@ -87,7 +84,7 @@ export const HubConflictModal: React.FC = () => {
               </span>
               <div className="flex items-center gap-1.5 font-bold text-rose-900 dark:text-rose-200">
                 <MapPin className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                <span className="truncate">{newHubName}</span>
+                <span className="truncate">{newLabel}</span>
               </div>
             </div>
           </div>

@@ -17,6 +17,7 @@ import { motion } from 'motion/react';
 import { io } from 'socket.io-client';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
+import { PromptDialog } from '../components/ui/Dialog';
 
 type TicketStatus = 'SENT_TO_KITCHEN' | 'ACCEPTED' | 'PREPARING' | 'READY' | 'REJECTED';
 
@@ -115,6 +116,7 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
   const [activeBrandFilter, setActiveBrandFilter] = useState<string>('all');
   const [showStockModal, setShowStockModal] = useState<boolean>(false);
   const [stockQuery, setStockQuery] = useState<string>('');
+  const [rejectTarget, setRejectTarget] = useState<KDSTicket | null>(null);
   const [now, setNow] = useState<number>(Date.now());
 
   // Elapsed SLA counters need a tick, but nothing else here does.
@@ -254,13 +256,7 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
   };
 
   const handleReject = (ticket: KDSTicket) => {
-    if (typeof window === 'undefined') return;
-    const reason = window.prompt(
-      'Why is this ticket being rejected? The collected amount is refunded.',
-      'Item unavailable',
-    );
-    if (reason === null) return;
-    handleUpdateStatus(ticket, 'REJECTED', reason.trim() || 'Item unavailable');
+    setRejectTarget(ticket);
   };
 
   const toggleStockItem = async (brandId: string, item: StockItem) => {
@@ -701,6 +697,27 @@ export const AdminKDSView: React.FC<AdminKDSViewProps> = ({ onBackToStorefront }
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={!!rejectTarget}
+        title="Reject this kitchen ticket?"
+        description={
+          rejectTarget
+            ? `Ticket ${rejectTarget.id.slice(0, 8)} for ${rejectTarget.brandName}. Any money already collected is refunded.`
+            : undefined
+        }
+        label="Reason for rejection"
+        placeholder="Item unavailable"
+        initialValue="Item unavailable"
+        required
+        confirmLabel="Reject and refund"
+        onSubmit={(reason) => {
+          const ticket = rejectTarget;
+          setRejectTarget(null);
+          if (ticket) void handleUpdateStatus(ticket, 'REJECTED', reason);
+        }}
+        onClose={() => setRejectTarget(null)}
+      />
     </div>
   );
 };

@@ -1,10 +1,20 @@
 import { PrismaClient } from '@prisma/client';
-import { MOCK_MENU_ITEMS } from '../src/data/mockData';
+import { SEED_MENU_ITEMS } from './seed-data';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  // This seed creates demo customers, riders, tickets and memberships. It must
+  // never touch a production database by accident.
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEV_SEED !== 'true') {
+    throw new Error(
+      'Refusing to run the development seed with NODE_ENV=production. ' +
+        'Use `npm run db:seed:prod` for the production bootstrap, or set ALLOW_DEV_SEED=true if this is a throwaway environment.',
+    );
+  }
+
   console.log('🌱 Updating CraveOS Multi-Brand Cloud Kitchen Database with local Brand Logos & Banners...');
+  console.log('   This is the DEVELOPMENT seed: it creates demo accounts and fixtures.');
 
   // 1. Create Hubs with Operating Hours
   const hubHsr = await prisma.hub.upsert({
@@ -356,18 +366,24 @@ async function main() {
     },
   });
 
+  // The demo customer mirrors what a real new signup gets: a 30-day trial.
+  // There is no paid membership flow yet, so seeding an ACTIVE plan with a
+  // far-future renewal would misrepresent the product.
+  const demoTrialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
   await prisma.membership.upsert({
     where: { userId: demoCustomer.id },
     update: {
-      status: 'ACTIVE',
+      status: 'TRIAL',
       planId: 'STANDARD_TRIAL',
-      renewsAt: new Date('2027-12-31T00:00:00.000Z'),
+      trialEndsAt: demoTrialEndsAt,
+      renewsAt: null,
     },
     create: {
       userId: demoCustomer.id,
-      status: 'ACTIVE',
+      status: 'TRIAL',
       planId: 'STANDARD_TRIAL',
-      renewsAt: new Date('2027-12-31T00:00:00.000Z'),
+      trialEndsAt: demoTrialEndsAt,
     },
   });
 
@@ -916,14 +932,14 @@ async function main() {
 
   console.log('✅ Menu items, operational users, riders, earnings, and tickets seeded successfully.');
 
-  // 8. Catalog parity — the storefront's MOCK_MENU_ITEMS is its advertised
-  //    catalogue. Any item that exists there but not in the database would
-  //    render as orderable and then fail at checkout with "no longer on the
-  //    menu". Upsert only missing rows so curated prices are never clobbered.
+  // 8. Catalog parity — the development seed catalogue is the advertised
+  //    menu. Any item that exists there but not in the database would render
+  //    as orderable and then fail at checkout with "no longer on the menu".
+  //    Upsert only missing rows so curated prices are never clobbered.
   const seededMenuItemIds = new Set(menuItemsData.map((item) => item.id));
   let parityAdded = 0;
 
-  for (const item of MOCK_MENU_ITEMS) {
+  for (const item of SEED_MENU_ITEMS) {
     if (seededMenuItemIds.has(item.id)) continue;
 
     const brandKitchenId = brandKitchenMap[item.brandId];

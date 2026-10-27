@@ -273,7 +273,7 @@ export class HubOpsService {
     // Hub finance must use the same "money actually collected" definition as
     // the platform revenue report. The old version summed finalPaidPaise for
     // orders that were still PREPARING (never paid), and ignored wallet/refunds.
-    const byGateway = { RAZORPAY: 0, WALLET: 0, COD: 0 };
+    const byGateway = { RAZORPAY: 0, WALLET: 0 };
     let totalRevenuePaise = 0;
     let paidOrders = 0;
 
@@ -488,9 +488,9 @@ export class HubOpsService {
         order: {
           hubId,
           status: { notIn: ['CANCELLED', 'DELIVERED'] },
-          // Never send an unpaid UPI/CARD order to the kitchen. COD is
-          // collect-on-delivery, so it is valid to cook before cash arrives.
-          OR: [{ payment: { status: 'SUCCESS' } }, { paymentMethod: 'COD' }],
+          // Never send an unpaid order to the kitchen. Every payment method
+          // now requires a successful payment row before cooking starts.
+          payment: { status: 'SUCCESS' },
         },
         status: { in: ['SENT_TO_KITCHEN', 'ACCEPTED', 'PREPARING', 'READY'] },
       },
@@ -537,8 +537,7 @@ export class HubOpsService {
         status: ticket.order.status,
         createdAt: ticket.order.createdAt,
         paymentMethod: ticket.order.paymentMethod,
-        isSettled:
-          ticket.order.payment?.status === 'SUCCESS' || ticket.order.paymentMethod === 'COD',
+        isSettled: ticket.order.payment?.status === 'SUCCESS',
         trip: ticket.order.deliveryTrip,
       },
     }));

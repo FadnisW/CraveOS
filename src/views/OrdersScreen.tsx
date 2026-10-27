@@ -21,7 +21,6 @@ import {
   Receipt,
   KeyRound,
 } from 'lucide-react';
-import { motion } from 'motion/react';
 import { io } from 'socket.io-client';
 
 interface OrdersScreenProps {
@@ -83,7 +82,6 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const { user, token } = useUser();
   const [activeOrder, setActiveOrder] = useState<Order | null>(initialOrder);
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
-  const [riderLocation, setRiderLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [now, setNow] = useState<number>(() => Date.now());
@@ -96,26 +94,17 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
 
   useEffect(() => {
     setActiveOrder(initialOrder);
-    if (initialOrder?.rider?.currentLat && initialOrder?.rider?.currentLng) {
-      setRiderLocation({
-        lat: initialOrder.rider.currentLat,
-        lng: initialOrder.rider.currentLng,
-      });
-    }
   }, [initialOrder]);
 
-  const refreshOrder = useCallback(
-    async (orderId: string) => {
-      try {
-        const liveOrder = await api.getOrderById(orderId);
-        setActiveOrder(mapApiOrder(liveOrder));
-        setLoadError(null);
-      } catch (err: any) {
-        setLoadError(err?.message || 'Could not refresh the order.');
-      }
-    },
-    [],
-  );
+  const refreshOrder = useCallback(async (orderId: string) => {
+    try {
+      const liveOrder = await api.getOrderById(orderId);
+      setActiveOrder(mapApiOrder(liveOrder));
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not refresh the order.');
+    }
+  }, []);
 
   // Client reconnection recovery: if the tab was reloaded mid-order, pick the
   // most recent in-flight order back up from the server.
@@ -138,12 +127,6 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
 
         if (recovered) {
           setActiveOrder(recovered);
-          if (recovered.rider?.currentLat && recovered.rider?.currentLng) {
-            setRiderLocation({
-              lat: recovered.rider.currentLat,
-              lng: recovered.rider.currentLng,
-            });
-          }
         }
       })
       .catch((err: any) => {
@@ -187,15 +170,6 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
     socket.on('riderPickedUp', handleStatusChange);
     socket.on('deliveryVerified', handleStatusChange);
 
-    socket.on(
-      'riderLocationUpdate',
-      (payload: { lat: number; lng: number; riderId?: string }) => {
-        if (payload && Number.isFinite(payload.lat) && Number.isFinite(payload.lng)) {
-          setRiderLocation({ lat: payload.lat, lng: payload.lng });
-        }
-      },
-    );
-
     const poll = setInterval(() => {
       refreshOrder(orderId);
     }, 20_000);
@@ -205,7 +179,6 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
       socket.off('tripAccepted', handleStatusChange);
       socket.off('riderPickedUp', handleStatusChange);
       socket.off('deliveryVerified', handleStatusChange);
-      socket.off('riderLocationUpdate');
       socket.disconnect();
       clearInterval(poll);
     };
@@ -220,28 +193,20 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const isDelivered = activeOrder?.status === 'DELIVERED';
 
   // The server stores a per-order estimate at checkout. Show the time that is
-  // actually left, not the original estimate forever.
+  // actually left, not the original estimate forever. If the server did not
+  // produce an estimate, say so instead of inventing one.
   const remainingEtaMins = useMemo(() => {
     if (!activeOrder || isCancelled || isDelivered) return null;
 
-    const target = Number(activeOrder.estimatedDeliveryMins) || 30;
+    const target = activeOrder.estimatedDeliveryMins;
+    if (typeof target !== 'number' || target <= 0) return null;
+
     const createdAt = new Date(activeOrder.createdAt).getTime();
     if (!Number.isFinite(createdAt)) return target;
 
     const elapsed = Math.max(0, Math.floor((now - createdAt) / 60_000));
     return Math.max(0, target - elapsed);
   }, [activeOrder, isCancelled, isDelivered, now]);
-
-  const riderPosition = useMemo(() => {
-    const lat = riderLocation?.lat ?? activeOrder?.rider?.currentLat;
-    const lng = riderLocation?.lng ?? activeOrder?.rider?.currentLng;
-    if (!lat || !lng) return { top: '210px', left: '420px' };
-
-    return {
-      top: `${Math.min(300, Math.max(140, 130 + (lat - 12.9172) * 15000))}px`,
-      left: `${Math.min(700, Math.max(200, 180 + (lng - 77.6228) * 15000))}px`,
-    };
-  }, [riderLocation, activeOrder?.rider?.currentLat, activeOrder?.rider?.currentLng]);
 
   const handleManualRefresh = async () => {
     if (!activeOrder) return;
@@ -275,89 +240,42 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
     .join('')
     .toUpperCase();
 
+  const paymentLabel =
+    activeOrder.paymentMethod === 'UNKNOWN'
+      ? 'Not reported by the server'
+      : activeOrder.paymentMethod;
+
+  const etaLabel = isCancelled
+    ? 'Cancelled'
+    : isDelivered
+      ? 'Delivered'
+      : remainingEtaMins === null
+        ? 'Awaiting estimate'
+        : remainingEtaMins === 0
+          ? 'Arriving soon'
+          : `${remainingEtaMins} Mins`;
+
   return (
-    <div className="relative w-full min-h-[calc(100vh-140px)] overflow-hidden rounded-3xl bg-slate-950 border border-slate-800 shadow-2xl">
-      {/* Decorative live map canvas */}
-      <div className="absolute inset-0 z-0 bg-[#0F172A] overflow-hidden">
-        <div
-          className="absolute inset-0 opacity-20"
-          style={{
-            backgroundImage:
-              'radial-gradient(#38BDF8 1px, transparent 1px), linear-gradient(to right, #1E293B 1px, transparent 1px), linear-gradient(to bottom, #1E293B 1px, transparent 1px)',
-            backgroundSize: '40px 40px, 80px 80px, 80px 80px',
-          }}
-        />
-
-        <svg className="absolute inset-0 w-full h-full stroke-rose-500/80" fill="none">
-          <path
-            d="M 200 150 Q 350 250 500 200 T 750 350"
-            strokeWidth="4"
-            strokeDasharray="8 6"
-            className="animate-pulse"
-          />
-        </svg>
-
-        <div className="absolute top-[130px] left-[180px] z-10 flex flex-col items-center">
-          <div className="px-2 py-1 rounded-md bg-rose-600 text-white text-[10px] font-extrabold shadow-lg mb-1">
-            Cloud Kitchen Hub
-          </div>
-          <div className="relative flex items-center justify-center">
-            <span className="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-rose-400 opacity-75" />
-            <div className="w-8 h-8 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg border-2 border-white">
-              <ChefHat className="w-4 h-4" />
-            </div>
-          </div>
-        </div>
-
-        {activeOrder.rider && !isDelivered && !isCancelled && (
-          <div
-            className="absolute z-20 flex flex-col items-center transition-all duration-1000 ease-linear"
-            style={riderPosition}
-          >
-            <div className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 text-[9px] font-black shadow-md mb-1 animate-bounce flex items-center gap-1">
-              <span>{activeOrder.rider.name.split(' ')[0]} en route</span>
-              {riderLocation && (
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-950 animate-ping" />
-              )}
-            </div>
-            <div className="w-9 h-9 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center shadow-xl border-2 border-slate-900 animate-pulse">
-              <Bike className="w-5 h-5" />
-            </div>
-          </div>
-        )}
-
-        <div className="absolute top-[330px] left-[730px] z-10 flex flex-col items-center">
-          <div className="px-2 py-1 rounded-md bg-slate-900 text-slate-200 text-[10px] font-extrabold shadow-lg mb-1 border border-slate-700">
-            {activeOrder.deliveryAddress.label || 'Delivery Address'}
-          </div>
-          <div className="w-8 h-8 rounded-full bg-slate-900 text-emerald-400 flex items-center justify-center shadow-lg border-2 border-emerald-400">
-            <MapPin className="w-4 h-4" />
-          </div>
-        </div>
-
-        <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
-          <button
-            onClick={onBackToHome}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900/90 text-white hover:bg-slate-800 text-xs font-bold shadow-xl backdrop-blur-md border border-slate-700/80 transition-all"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to Storefront</span>
-          </button>
-          <button
-            onClick={handleManualRefresh}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-slate-900/90 text-slate-200 hover:bg-slate-800 text-xs font-bold shadow-xl backdrop-blur-md border border-slate-700/80 transition-all disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
-        </div>
+    <div className="max-w-3xl mx-auto space-y-6 pb-20">
+      <div className="flex items-center justify-between gap-3">
+        <button
+          onClick={onBackToHome}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-200 hover:bg-gray-200 dark:hover:bg-slate-700 text-xs font-bold transition-all"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Back to Storefront</span>
+        </button>
+        <button
+          onClick={handleManualRefresh}
+          disabled={refreshing}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-200 hover:bg-gray-200 dark:hover:bg-slate-700 text-xs font-bold transition-all disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          <span>Refresh</span>
+        </button>
       </div>
 
-      {/* Bottom sheet */}
-      <div className="absolute bottom-0 left-0 right-0 z-10 max-w-3xl mx-auto rounded-t-3xl bg-slate-900/95 backdrop-blur-xl border-t border-white/10 p-6 sm:p-8 text-white shadow-2xl space-y-6 max-h-[78vh] overflow-y-auto">
-        <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto -mt-2 mb-2 shrink-0 opacity-80" />
-
+      <div className="rounded-3xl bg-slate-950 border border-slate-800 p-6 sm:p-8 text-white shadow-2xl space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-6">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -365,7 +283,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
                 {isCancelled ? 'Order Cancelled' : isDelivered ? 'Order Delivered' : 'Live Order Status'}
               </span>
               {isLiveConnected && !isDelivered && !isCancelled && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse">
+                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                   <Radio className="w-3 h-3 text-emerald-400" /> Live
                 </span>
               )}
@@ -392,13 +310,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
                 isCancelled ? 'text-rose-400' : 'text-emerald-400'
               }`}
             >
-              {isCancelled
-                ? 'Cancelled'
-                : isDelivered
-                  ? 'Delivered'
-                  : remainingEtaMins === 0
-                    ? 'Arriving soon'
-                    : `${remainingEtaMins ?? activeOrder.estimatedDeliveryMins} Mins`}
+              {etaLabel}
             </div>
           </div>
         </div>
@@ -505,9 +417,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
               </div>
               <div>
                 <h4 className="text-sm font-bold">{activeOrder.rider.name}</h4>
-                <p className="text-xs text-slate-300">
-                  Delivery Executive • {activeOrder.rider.rating.toFixed(1)} ★
-                </p>
+                <p className="text-xs text-slate-300">Delivery Executive</p>
               </div>
             </div>
 
@@ -567,8 +477,12 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
             </span>
           </div>
           <div className="flex justify-between pt-2 border-t border-white/10 text-sm font-black text-white">
-            <span>{activeOrder.paymentMethod === 'COD' ? 'Pay on delivery' : 'Paid'}</span>
+            <span>Order total</span>
             <span>₹{activeOrder.finalPaidAmount.toFixed(0)}</span>
+          </div>
+          <div className="flex justify-between text-[10px] text-slate-400 pt-1">
+            <span>Payment method</span>
+            <span>{paymentLabel}</span>
           </div>
           <div className="flex items-center gap-1.5 text-[10px] text-slate-400 pt-1">
             <ShieldCheck className="w-3 h-3 text-emerald-500" />

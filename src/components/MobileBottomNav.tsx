@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Home, Compass, Tag, ShoppingBag, User, Clock } from 'lucide-react';
+import { Home, Compass, ShoppingBag, User, Clock } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 
 interface MobileBottomNavProps {
@@ -19,7 +19,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
 
   const navItems = [
     { id: 'home', label: 'Home', icon: Home },
-    { id: 'deals', label: 'Deals', icon: Tag },
+    { id: 'menu', label: 'Menu', icon: Compass },
     { id: 'orders', label: 'Orders', icon: Clock },
     { id: 'profile', label: 'Profile', icon: User },
   ];

@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'CraveOS — Multi-Brand Cloud Kitchen Food Delivery',
+  title: 'CraveOS — Multi-Brand Cloud Kitchen Ordering',
   description:
-    'Order from 8 cloud kitchen brands in one cart, one payment, one delivery. BOX8, MOJO Pizza, ZAZA Biryani, LeanCrust and more — delivered free, only for Eatclub members.',
+    'Order from multiple cloud kitchen brands in one cart, with one payment and one delivery. Live menus, server-verified prices and order tracking.',
   keywords: [
     'cloud kitchen',
     'food delivery',
@@ -16,9 +16,9 @@ export const metadata: Metadata = {
     'multi-brand food',
   ],
   openGraph: {
-    title: 'CraveOS — Multi-Brand Cloud Kitchen Food Delivery',
+    title: 'CraveOS — Multi-Brand Cloud Kitchen Ordering',
     description:
-      'Order from 8 cloud kitchen brands in one cart, one payment, one delivery. Free delivery for members.',
+      'Order from multiple cloud kitchen brands in one cart, with one payment and one delivery.',
     type: 'website',
   },
 };

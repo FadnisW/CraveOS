@@ -1,132 +1,33 @@
-import { Brand, MenuItem, UserProfile, Coupon } from '../types';
+/**
+ * Development seed catalogue.
+ *
+ * This is the only surviving copy of the original storefront fixtures. It is
+ * imported by `prisma/seed.ts` and never by application code. Prices here are
+ * seed values for a local database, not claims rendered by the UI.
+ */
 
-export const MOCK_BRANDS: Brand[] = [
-  {
-    id: 'mojo-pizza',
-    name: 'MOJO Pizza- 2X Toppings',
-    tagline: "India's Highest Rated Pizza Delivery Chain",
-    logo: '/Brand Logo/Mojo Pizza.png',
-    heroImage: '/Brand Logo/Mojo Pizza Banner.webp',
-    themeColor: '#FF6B00',
-    rating: 4.3,
-    totalRatings: 1300,
-    deliveryTimeMins: 21,
-    minOrderValue: 199,
-    categories: ['Popular Pizzas', 'Handcrafted Crusts', 'Sides & Garlic Bread', 'Desserts', 'Beverages'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'leancrust',
-    name: 'LeanCrust Pizza',
-    tagline: 'The Thin Crust Experts',
-    logo: '/Brand Logo/LeanCrust Pizza.png',
-    heroImage: '/Brand Logo/LeanPizza banner.webp',
-    themeColor: '#3B82F6',
-    rating: 4.5,
-    totalRatings: 1000,
-    deliveryTimeMins: 22,
-    minOrderValue: 229,
-    categories: ['Gourmet Thin Crust', 'Cheesy Garlic Breads', 'Salads', 'Drinks'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'box8',
-    name: 'BOX8 - Desi Meals',
-    tagline: "India's Largest Desi Meals Brand",
-    logo: '/Brand Logo/Box8.png',
-    heroImage: '/Brand Logo/Box8 PBanner.webp',
-    themeColor: '#D97706',
-    rating: 4.4,
-    totalRatings: 5500,
-    deliveryTimeMins: 18,
-    minOrderValue: 149,
-    categories: ['All-in-1 Meals', 'Thalis', 'Curries', 'Biryanis', 'Desserts', 'Drinks'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'wefit',
-    name: 'WeFit - Protein Meals',
-    tagline: 'Upto 65 gm Protein in Bowls, Salads & Sandwiches',
-    logo: '/Brand Logo/Wefit.png',
-    heroImage: '/Brand Logo/WeFit Banner.webp',
-    themeColor: '#10B981',
-    rating: 4.5,
-    totalRatings: 1600,
-    deliveryTimeMins: 21,
-    minOrderValue: 169,
-    categories: ['Protein Bowls', 'Keto Meals', 'Fresh Salads', 'Cold Pressed Juices'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'zaza-biryani',
-    name: 'ZAZA Mughal Biryani',
-    tagline: "India's Most Flavourful Biryani",
-    logo: '/Brand Logo/Zaza.png',
-    heroImage: '/Brand Logo/Zaza Banner.webp',
-    themeColor: '#8B5CF6',
-    rating: 4.5,
-    totalRatings: 1600,
-    deliveryTimeMins: 18,
-    minOrderValue: 179,
-    categories: ['Royal Biryanis', 'Kebabs & Starters', 'Raitas & Gravy', 'Desserts'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'nh1-bowls',
-    name: 'NH1 Bowls',
-    tagline: 'Highway to North! Real North-Indian Taste.',
-    logo: '/Brand Logo/NH1 Logo.png',
-    heroImage: '/Brand Logo/NH1 Banner.webp',
-    themeColor: '#DC2626',
-    rating: 4.5,
-    totalRatings: 2500,
-    deliveryTimeMins: 17,
-    minOrderValue: 139,
-    categories: ['Rajma & Chole Bowls', 'Paneer Bowls', 'Chicken Bowls', 'Lassi & Beverages'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'mealful-rolls',
-    name: 'Mealful Rolls - Big 8-Inch Rolls',
-    tagline: 'Double Filled 8-Inch Loaded Wraps',
-    logo: '/Brand Logo/Mealful Logo.png',
-    heroImage: '/Brand Logo/Mealful Banner.jpg',
-    themeColor: '#D97706',
-    rating: 4.5,
-    totalRatings: 11200,
-    deliveryTimeMins: 18,
-    minOrderValue: 129,
-    categories: ['Signature Rolls', 'Classic Kathi Rolls', 'Sides', 'Beverages'],
-    isAvailable: true,
-    isOwned: true,
-  },
-  {
-    id: 'zulus-pizza',
-    name: "Zulu's Pizza - Wholesale Pizzas",
-    tagline: 'Giant 12" Wholesale Pizzas & Value Combos',
-    logo: '/Brand Logo/Zulu Logo.png',
-    heroImage: '/Brand Logo/Zulu Banner.jpg',
-    themeColor: '#F59E0B',
-    rating: 4.6,
-    totalRatings: 1850,
-    deliveryTimeMins: 20,
-    minOrderValue: 199,
-    categories: ['Wholesale Pizzas', 'Jumbo Crusts', 'Cheesy Sides'],
-    isAvailable: true,
-    isOwned: true,
-  },
-];
+export interface SeedMenuItem {
+  id: string;
+  brandId: string;
+  name: string;
+  description: string;
+  mrp: number;
+  memberPrice: number;
+  image?: string;
+  isVeg: boolean;
+  isBestseller?: boolean;
+  category: string;
+  rating?: number;
+  isAvailable?: boolean;
+  dietType?: string;
+  spiceLevel?: number;
+  gstPct?: number;
+  variants?: unknown;
+  addOns?: unknown;
+  customizationGroups?: unknown;
+}
 
-// Raw mock items don't carry hub info — they're seeded with a default hub at export time.
-// Use Omit so TypeScript doesn't complain about the missing required field.
-// NOTE: keep this named exactly MOCK_MENU_ITEMS so the bundler's static export analysis works.
-export const MOCK_MENU_ITEMS: MenuItem[] = ((): Omit<MenuItem, 'availableHubIds'>[] => [
+export const SEED_MENU_ITEMS: SeedMenuItem[] = [
   // 🍕 PIZZA CATEGORY (mojo-pizza)
   {
     id: 'pz-1',
@@ -963,75 +864,5 @@ export const MOCK_MENU_ITEMS: MenuItem[] = ((): Omit<MenuItem, 'availableHubIds'
     category: 'Chicken Wings',
     rating: 4.7,
     isAvailable: true,
-  },
-// Close IIFE + inject availableHubIds for every item
-])().map((item) => ({ ...item, availableHubIds: ['hub-hsr-01'] }));
-
-export const MOCK_USER: UserProfile = {
-  id: 'usr-101',
-  name: 'Alex Morgan',
-  email: 'alex.morgan@eatclub.in',
-  phone: '+91 98765 43210',
-  isMember: true,
-  membershipPlan: {
-    type: 'annual',
-    expiresAt: '2026-12-31',
-    totalSavingsToDate: 3420,
-  },
-  walletBalance: 250,
-  referralCode: 'EATALEX50',
-  savedAddresses: [
-    {
-      id: 'addr-1',
-      type: 'home',
-      label: 'Home',
-      addressLine: 'Flat 402, Sunshine Heights, HSR Layout Sector 2',
-      city: 'Bengaluru',
-      pincode: '560102',
-      lat: 12.9121,
-      lng: 77.6445,
-      resolvedHubId: 'hub-hsr-01',
-      isDefault: true,
-    },
-    {
-      id: 'addr-2',
-      type: 'work',
-      label: 'Office HQ',
-      addressLine: 'Building 7, Embassy TechVillage, Outer Ring Road',
-      city: 'Bengaluru',
-      pincode: '560103',
-      lat: 12.9260,
-      lng: 77.6830,
-      resolvedHubId: 'hub-hsr-01',
-    },
-    {
-      id: 'addr-3',
-      type: 'other',
-      label: 'Indiranagar Stay',
-      addressLine: '100ft Road, Near Metro Station, Indiranagar',
-      city: 'Bengaluru',
-      pincode: '560038',
-      lat: 12.9719,
-      lng: 77.6412,
-      resolvedHubId: 'hub-indiranagar-02',
-    },
-  ],
-};
-
-export const MOCK_COUPONS: Coupon[] = [
-  {
-    code: 'EATCLUB100',
-    description: 'Flat ₹100 OFF on orders above ₹399',
-    discountType: 'flat',
-    discountValue: 100,
-    minOrderValue: 399,
-  },
-  {
-    code: 'MOJO20',
-    description: 'Extra 20% OFF on MOJO Pizza',
-    discountType: 'percentage',
-    discountValue: 20,
-    minOrderValue: 299,
-    applicableBrandId: 'mojo-pizza',
   },
 ];

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
+import { PromptDialog } from '../components/ui/Dialog';
 
 interface AdminDispatchViewProps {
   onBackToStorefront: () => void;
@@ -28,6 +29,11 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
   const [otpInput, setOtpInput] = useState<Record<string, string>>({});
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [tripPrompt, setTripPrompt] = useState<{
+    action: string;
+    trip: any;
+    promptText: string;
+  } | null>(null);
 
   const fetchDispatchData = async () => {
     setLoading(true);
@@ -125,9 +131,7 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
   };
 
   const promptAndRun = (action: string, trip: any, promptText: string) => {
-    const reason = typeof window !== 'undefined' ? window.prompt(promptText) : null;
-    if (reason === null) return;
-    handleTripAction(action, trip, { reason: reason.trim() || undefined });
+    setTripPrompt({ action, trip, promptText });
   };
 
   const onlineRiders = riders.filter((r) => r.isOnline);
@@ -150,7 +154,7 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Hyperlocal fleet assignment, delivery trip state machine & live tracking
+              Fleet assignment and the delivery trip state machine
             </p>
           </div>
         </div>
@@ -224,8 +228,10 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
             <Clock className="w-5 h-5" />
           </div>
           <div>
-            <span className="text-[10px] font-bold text-gray-400 uppercase">Delivery SLA Target</span>
-            <div className="text-2xl font-black text-gray-900 dark:text-white">&lt; 25 Mins</div>
+            <span className="text-[10px] font-bold text-gray-400 uppercase">Awaiting a Rider</span>
+            <div className="text-2xl font-black text-gray-900 dark:text-white">
+              {unassignedCount} {unassignedCount === 1 ? 'Trip' : 'Trips'}
+            </div>
           </div>
         </div>
       </div>
@@ -387,9 +393,7 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
                   <h4 className="text-xs font-extrabold text-gray-900 dark:text-white">
                     {rider.name}
                   </h4>
-                  <p className="text-[10px] text-gray-400">
-                    {rider.phone} • {rider.rating || 5.0} ★
-                  </p>
+                  <p className="text-[10px] text-gray-400">{rider.phone}</p>
                 </div>
               </div>
 
@@ -408,6 +412,24 @@ export const AdminDispatchView: React.FC<AdminDispatchViewProps> = ({ onBackToSt
           ))}
         </div>
       </div>
+
+      <PromptDialog
+        open={!!tripPrompt}
+        title={tripPrompt?.promptText || 'Trip action'}
+        description={
+          tripPrompt?.trip?.id ? `Trip #${String(tripPrompt.trip.id).slice(0, 8)}` : undefined
+        }
+        label="Reason"
+        placeholder="Tell the rider and the hub why this trip is changing."
+        required
+        confirmLabel={tripPrompt?.action === 'reject' ? 'Reject trip' : 'Cancel trip'}
+        onSubmit={(reason) => {
+          const pending = tripPrompt;
+          setTripPrompt(null);
+          if (pending) void handleTripAction(pending.action, pending.trip, { reason });
+        }}
+        onClose={() => setTripPrompt(null)}
+      />
     </div>
   );
 };

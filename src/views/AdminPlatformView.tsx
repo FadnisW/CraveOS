@@ -118,9 +118,9 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
 
   const [hubDraft, setHubDraft] = useState({
     name: '',
-    city: 'Bengaluru',
-    lat: '12.9121',
-    lng: '77.6445',
+    city: '',
+    lat: '',
+    lng: '',
     operatingHoursStart: '08:00',
     operatingHoursEnd: '03:00',
     polygon: '',
@@ -276,6 +276,18 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
     event.preventDefault();
     const lat = Number(hubDraft.lat);
     const lng = Number(hubDraft.lng);
+
+    // Never invent a location for a new kitchen. The operator must supply the
+    // real coordinates; a hub pinned to a guessed point would misroute orders.
+    if (!hubDraft.lat.trim() || !hubDraft.lng.trim() || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      setError('Enter the hub latitude and longitude before creating it.');
+      return;
+    }
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      setError('Latitude must be between -90 and 90 and longitude between -180 and 180.');
+      return;
+    }
+
     let servicePolygon: any;
 
     if (hubDraft.polygon.trim()) {
@@ -315,7 +327,7 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
         }),
       `Hub ${hubDraft.name.trim()} created.`,
     );
-    setHubDraft((current) => ({ ...current, name: '', polygon: '' }));
+    setHubDraft((current) => ({ ...current, name: '', lat: '', lng: '', polygon: '' }));
   };
 
   const saveHub = async (event: React.FormEvent) => {
@@ -1246,12 +1258,7 @@ export const AdminPlatformView: React.FC<{ initialTab?: PlatformTab }> = ({
                 <Metric label="Net collected" value={rupees(revenue?.totalRevenuePaise)} />
                 <Metric label="Paid transactions" value={revenue?.totalTransactions ?? 0} />
                 <Metric label="Razorpay" value={rupees(revenue?.byGateway?.RAZORPAY)} />
-                <Metric
-                  label="Wallet / COD"
-                  value={`${rupees(revenue?.byGateway?.WALLET)} / ${rupees(
-                    revenue?.byGateway?.COD,
-                  )}`}
-                />
+                <Metric label="Wallet" value={rupees(revenue?.byGateway?.WALLET)} />
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

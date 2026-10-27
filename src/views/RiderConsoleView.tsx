@@ -1021,7 +1021,6 @@ export const RiderConsoleView: React.FC = () => {
             <Row label="Phone" value={rider?.phone || '—'} />
             <Row label="Vehicle" value={rider?.vehicleType || '—'} />
             <Row label="Registration" value={rider?.vehicleRegNo || 'Not set'} />
-            <Row label="Rating" value={rider?.rating ? `${rider.rating} ★` : '—'} />
             <Row
               label="Capacity"
               value={rider?.capacityMax ? `${rider.capacityMax} order(s)` : '—'}

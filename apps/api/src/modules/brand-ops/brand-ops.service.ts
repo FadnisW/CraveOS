@@ -517,7 +517,7 @@ export class BrandOpsService {
         // and cancelled baskets must not inflate brand GMV.
         order: {
           status: { not: 'CANCELLED' },
-          OR: [{ payment: { status: 'SUCCESS' } }, { paymentMethod: 'COD', status: 'DELIVERED' }],
+          payment: { status: 'SUCCESS' },
         },
       },
       include: { items: true },
