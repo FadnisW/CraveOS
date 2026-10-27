@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { Worker, Job } from 'bullmq';
 import { KITCHEN_QUEUE_NAME } from './queue.constants';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { redisConnectionOptions } from '../../common/config/env.validation';
 
 @Injectable()
 export class KitchenNotificationWorker implements OnModuleInit, OnModuleDestroy {
@@ -11,8 +12,7 @@ export class KitchenNotificationWorker implements OnModuleInit, OnModuleDestroy 
   constructor(private readonly websocketsGateway: OrderTrackingGateway) {}
 
   onModuleInit() {
-    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-    const parsed = new URL(redisUrl);
+    const connection = redisConnectionOptions();
 
     this.worker = new Worker(
       KITCHEN_QUEUE_NAME,
@@ -26,8 +26,7 @@ export class KitchenNotificationWorker implements OnModuleInit, OnModuleDestroy 
       },
       {
         connection: {
-          host: parsed.hostname || 'localhost',
-          port: parseInt(parsed.port || '6379', 10),
+          ...connection,
           maxRetriesPerRequest: null,
         },
       },

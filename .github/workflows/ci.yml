@@ -1,76 +1,40 @@
-name: CraveOS CI/CD Pipeline
+name: CraveOS CI
 
 on:
   push:
-    branches: [ main, staging, develop, 'feature/**' ]
+    branches: [main, staging, develop, 'feature/**']
   pull_request:
-    branches: [ main, staging, develop ]
+    branches: [main, staging, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   no-fakes:
-    name: 🚫 No Fake Surfaces
+    name: No fake surfaces
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Check Feature Registry & Banned Patterns
+      - name: Check feature registry and banned patterns
         run: node scripts/check-no-fakes.mjs
 
-  lint-and-typecheck:
-    name: 🔍 Lint & Workspace Typecheck
+  verify:
+    name: Typecheck, migrate, build and health-check
     needs: no-fakes
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    timeout-minutes: 20
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install Dependencies
-        run: npm ci || npm install
-
-      - name: Generate Prisma Client
-        run: npx prisma generate || true
-
-      - name: Typecheck Workspace
-        run: npm run check-types --if-present || npx tsc --noEmit || true
-
-  build-frontend:
-    name: 🌐 Build Next.js PWA Storefront (Vercel Target)
-    runs-on: ubuntu-latest
-    needs: lint-and-typecheck
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install Dependencies
-        run: npm ci || npm install
-
-      - name: Build Web App
-        run: npm run build --if-present
-        env:
-          NEXT_TELEMETRY_DISABLED: 1
-
-  build-backend-and-test:
-    name: ⚡ NestJS API & BullMQ Worker (Render Target + Redis/Postgres)
-    runs-on: ubuntu-latest
-    needs: lint-and-typecheck
     services:
       postgres:
         image: postgres:16-alpine
@@ -96,32 +60,59 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://craveos:craveos_password@localhost:5432/craveos_db?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-jwt-secret-that-is-never-used-in-production
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: 1
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/api/package-lock.json
 
-      - name: Install Dependencies
-        run: npm ci || npm install
+      - name: Install storefront dependencies
+        run: npm ci
 
-      - name: Validate Prisma Schema
-        run: npx prisma validate || true
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: apps/api
 
-      - name: Simulate Render Pre-Deploy Command (prisma migrate deploy)
-        run: npx prisma migrate deploy || npx prisma db push --skip-generate || true
-        env:
-          DATABASE_URL: "postgresql://craveos:craveos_password@localhost:5432/craveos_db?schema=public"
+      - name: Generate Prisma client
+        run: npx prisma generate
 
-      - name: Run Integration & Fan-Out Tests
-        run: npm test --if-present || true
-        env:
-          DATABASE_URL: "postgresql://craveos:craveos_password@localhost:5432/craveos_db?schema=public"
-          REDIS_URL: "redis://localhost:6379"
+      - name: Validate Prisma schema
+        run: npx prisma validate
 
-      - name: Verify API Build Integrity
-        run: npm run build --if-present
+      - name: Apply migrations to the CI database
+        run: npx prisma migrate deploy
+
+      - name: Typecheck storefront
+        run: npm run typecheck
+
+      - name: Typecheck API
+        run: npm run typecheck
+        working-directory: apps/api
+
+      - name: Build storefront
+        run: npm run build
+
+      - name: Build API
+        run: npm run build
+        working-directory: apps/api
+
+      - name: Verify production startup guard
+        run: npm run check:prod-guard
+
+      - name: Verify API readiness probe
+        run: npm run check:api-health

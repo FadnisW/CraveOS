@@ -11,6 +11,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RiderStatus } from '@prisma/client';
 import Redis from 'ioredis';
+import { redisUrl } from '../../common/config/env.validation';
 
 const RIDER_OTP_TTL_SECONDS = 10 * 60; // 10 minutes
 
@@ -24,7 +25,8 @@ export class RidersService {
     private readonly jwtService: JwtService,
     private readonly notificationsService: NotificationsService,
   ) {
-    this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+    // No localhost fallback: REDIS_URL is required and validated at startup.
+    this.redis = new Redis(redisUrl());
     this.redis.on('connect', () => this.logger.log('🔴 Redis connected for Rider OTP store'));
     this.redis.on('error', (err) => this.logger.warn(`Redis error in RidersService: ${err.message}`));
   }

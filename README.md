@@ -78,7 +78,7 @@ copy .env.example .env
 # 3. Install and prepare the database
 npm install
 npx prisma generate
-npx prisma db push
+npm run db:migrate:deploy
 
 # 4. Seed the DEVELOPMENT database (demo brands, menu, staff, riders)
 npm run db:seed
@@ -96,6 +96,16 @@ npm run dev
 `ALLOW_DEV_SEED=true` is set explicitly. It creates demo accounts and fixture
 orders/riders and must never touch a production database.
 
+If a database was created before the baseline migration with `prisma db push`,
+mark the baseline as applied once:
+
+```bash
+npx prisma migrate resolve --applied 0_init
+npx prisma migrate status
+```
+
+See `docs/OPERATIONS.md` for the drift check that must pass before doing this.
+
 ### Production bootstrap
 
 Production gets exactly one seeded row: the first super-admin. Hubs, brands,
@@ -104,21 +114,39 @@ menus, riders and customers are created through the operator consoles.
 ```bash
 # NODE_ENV=production, plus:
 # SUPER_ADMIN_EMAIL, SUPER_ADMIN_PHONE, SUPER_ADMIN_NAME (optional)
+npm run db:migrate:deploy
 npm run db:seed:prod
 ```
+
+The API refuses to start in production unless `DATABASE_URL`, `REDIS_URL`, a
+strong `JWT_SECRET` and explicit HTTPS `NEXT_PUBLIC_APP_URL` origins are set,
+and `DEV_OTP_BYPASS` is off. See `docs/OPERATIONS.md` section 1.
 
 ## Verification
 
 ```bash
 npm run check:no-fakes     # feature registry + banned fake patterns
-npx tsc --noEmit           # storefront types
-cd apps/api && npx tsc --noEmit
+npm run typecheck          # storefront types
+npm run typecheck:api      # NestJS API types
 npm run build              # production storefront build
+npm run build:api          # production API build
+npm run check:prod-guard   # production startup guard rejects unsafe config
+npm run check:api-health   # PostgreSQL + Redis readiness probe
 ```
+
+`check:api-health` starts the built API on port 4177, so stop any process that
+already uses that port. Both the guard and the health check require
+`npm run build:api` first.
 
 The no-fakes check runs first in CI. A feature that is not backed by the API
 and database must be marked `API`, `HIDDEN`, `PLANNED` or `REMOVED` in
 `docs/FEATURES.md` and must not be reachable from the UI.
+
+## Operations
+
+`docs/OPERATIONS.md` is the release runbook: startup contract, health probe,
+migration policy, backups, restore drills, rollback, secret rotation and the
+pre-deploy checklist.
 
 ## Launch gates
 
@@ -128,20 +156,22 @@ Before taking real money, `docs/FEATURES.md` requires:
    officer are real values, not `{{PLACEHOLDER}}` tokens.
 2. Refund, cancellation, shipping and terms pages are reviewed and published.
 3. Razorpay live keys and webhook secret are configured.
-4. `DEV_OTP_BYPASS` is off.
+4. `DEV_OTP_BYPASS` is off and the production startup guard passes.
 5. Resend has a verified sending domain in `RESEND_FROM_EMAIL`.
 6. Rider sign-in has a real delivery channel.
 7. Database backups and restore drills are in place.
 8. Every deploy has a tested rollback path.
+9. `/api/v1/health` returns `200` with PostgreSQL and Redis both `up`.
 
 ## Repository layout
 
 ```
 src/                 Next.js storefront and operator consoles
 apps/api/            NestJS API, WebSocket gateway and workers
-prisma/              Schema, development seed and production bootstrap
-scripts/             no-fakes guard
+prisma/              Schema, migrations, development seed, production bootstrap
+scripts/             no-fakes guard, startup guard check, health check
 docs/FEATURES.md     Feature registry and launch gates
+docs/OPERATIONS.md   Startup, migrations, backups, restore and rollback runbook
 prototype/           Static design reference (not shipped)
 ```
 

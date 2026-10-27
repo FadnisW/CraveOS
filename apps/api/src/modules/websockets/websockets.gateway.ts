@@ -10,6 +10,7 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { corsOrigins } from '../../common/config/env.validation';
 
 interface SocketUser {
   sub: string;
@@ -19,14 +20,20 @@ interface SocketUser {
   scopedBrandId?: string | null;
 }
 
-const ALLOWED_ORIGINS = (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
 @WebSocketGateway({
   cors: {
-    origin: ALLOWED_ORIGINS,
+    // Evaluated per handshake, after ConfigModule has loaded .env. A static
+    // array at import time silently locked production sockets to localhost.
+    origin: (
+      origin: string,
+      callback: (error: Error | null, allow?: boolean) => void,
+    ) => {
+      if (!origin || corsOrigins().includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`Origin '${origin}' is not allowed`), false);
+    },
     credentials: true,
   },
 })

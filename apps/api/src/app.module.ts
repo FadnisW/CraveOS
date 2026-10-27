@@ -20,13 +20,18 @@ import { BrandOpsModule } from './modules/brand-ops/brand-ops.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { RolesGuard } from './common/guards/roles.guard';
 import { JwtConfigModule } from './common/auth/jwt-config.module';
+import { validateEnv } from './common/config/env.validation';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
-    // Config module — loads .env from monorepo root
+    // Config module — loads .env from monorepo root and fails fast on an
+    // unsafe production configuration (weak secret, missing DB/Redis,
+    // DEV_OTP_BYPASS, non-HTTPS CORS origin).
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: ['../../.env', '.env'],
+      validate: validateEnv,
     }),
 
     // Cron scheduling
@@ -54,6 +59,7 @@ import { JwtConfigModule } from './common/auth/jwt-config.module';
     HubOpsModule,
     BrandOpsModule,
     AddressesModule,
+    HealthModule,
   ],
   providers: [
     {

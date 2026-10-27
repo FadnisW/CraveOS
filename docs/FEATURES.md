@@ -83,6 +83,14 @@ mock array is a release blocker.
 | Brand menu management | LIVE | `src/views/BrandOpsView.tsx` | `GET/POST/PATCH/DELETE /brand-ops/:brandId/menu/*`; `MenuItem` | Manual: price and availability edits persist | |
 | Brand analytics and finance | LIVE | `src/views/BrandOpsView.tsx` | `GET /brand-ops/:brandId/analytics`, `GET /brand-ops/:brandId/finance` | Manual: totals reconcile with orders | |
 
+## Platform
+
+| Feature | Status | Surface | Source of truth | Verification | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Health and readiness probe | API | none | `GET /api/v1/health`; live PostgreSQL `SELECT 1` and Redis `PING` | CI: `npm run check:api-health` returns `200` with both checks `up` | Public; returns `503` when either dependency is down; no secrets in the response |
+| Production startup guard | API | none | `apps/api/src/common/config/env.validation.ts` | CI: `npm run check:prod-guard` rejects an example secret, localhost origin and `DEV_OTP_BYPASS=true` | Process exits before listening on an unsafe production configuration |
+| Database migrations | API | none | `prisma/migrations/0_init`; `prisma migrate deploy` | CI applies migrations to a fresh PostgreSQL 16 database | `db push` is forbidden for databases with real data; see `docs/OPERATIONS.md` |
+
 ## Removed in Phase 0
 
 These were deleted because they were not backed by a real chain. Do not
@@ -114,6 +122,10 @@ The product must not be deployed to customers until all of these are true:
    return 503 outside the development bypass.
 7. Database backups and restore drills are in place.
 8. A rollback path exists for every deploy.
+9. The production startup guard passes with `NODE_ENV=production`, a strong
+   `JWT_SECRET`, explicit HTTPS origins and `DEV_OTP_BYPASS` off.
+10. `/api/v1/health` returns `200` with PostgreSQL and Redis both `up`, and an
+    external uptime monitor polls it.
 
 ## How to add a feature
 

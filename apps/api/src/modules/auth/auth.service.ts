@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import Redis from 'ioredis';
+import { redisUrl } from '../../common/config/env.validation';
 
 const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
 
@@ -22,8 +23,9 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly notificationsService: NotificationsService,
   ) {
-    // Connect to Redis — OTPs survive server restarts/hot-reloads
-    this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+    // Connect to Redis — OTPs survive server restarts/hot-reloads.
+    // No localhost fallback: REDIS_URL is required and validated at startup.
+    this.redis = new Redis(redisUrl());
     this.redis.on('connect', () => this.logger.log('🔴 Redis connected for OTP store'));
     this.redis.on('error', (err) => this.logger.warn(`Redis error: ${err.message}`));
   }
