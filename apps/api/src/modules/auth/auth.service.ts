@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
   Logger,
   ServiceUnavailableException,
   HttpException,
@@ -18,6 +19,7 @@ import { TokenDenylistService } from '../../common/auth/token-denylist.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 import Redis from 'ioredis';
 import { redisUrl } from '../../common/config/env.validation';
+import { normaliseIndianPhone } from '../../common/utils/phone';
 
 const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
 const OTP_RESEND_COOLDOWN_SECONDS = 60;
@@ -260,6 +262,62 @@ export class AuthService {
     }
 
     return { user };
+  }
+
+  /**
+   * Updates the customer-editable profile fields.
+   *
+   * Phone is the delivery contact, not a login identifier. It is normalised to
+   * `+91XXXXXXXXXX` and must be unique so two customers cannot claim the same
+   * number. Email is the account identity and is not changed here.
+   */
+  async updateMe(userId: string, input: { name?: string; phone?: string | null }) {
+    if (!userId) {
+      throw new UnauthorizedException('Authentication required');
+    }
+
+    const data: { name?: string | null; phone?: string | null } = {};
+
+    if (input.name !== undefined) {
+      const name = String(input.name || '').trim();
+      if (name.length > 80) {
+        throw new BadRequestException('Name must be 80 characters or fewer');
+      }
+      data.name = name.length > 0 ? name : null;
+    }
+
+    if (input.phone !== undefined) {
+      const phone = normaliseIndianPhone(input.phone);
+      if (phone) {
+        const taken = await this.prisma.user.findFirst({
+          where: { phone, NOT: { id: userId } },
+          select: { id: true },
+        });
+        if (taken) {
+          throw new ConflictException(
+            'That phone number is already attached to another account',
+          );
+        }
+      }
+      data.phone = phone;
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('Nothing to update');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('This account no longer exists');
+    }
+    if (user.isBlocked) {
+      throw new ForbiddenException(
+        'This account has been blocked. Contact support.',
+      );
+    }
+
+    await this.prisma.user.update({ where: { id: userId }, data });
+    return this.getMe(userId);
   }
 
   /**

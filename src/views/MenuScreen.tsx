@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Check,
   Flame,
+  MapPin,
   Plus,
   Search,
   SlidersHorizontal,
@@ -21,6 +22,7 @@ import {
 interface MenuScreenProps {
   initialCategory?: string;
   initialBrandId?: string | null;
+  hubId?: string;
   onBack: () => void;
   onOpenItemModal: (item: MenuItem) => void;
 }
@@ -33,6 +35,7 @@ interface Catalogue {
 export const MenuScreen: React.FC<MenuScreenProps> = ({
   initialCategory = '',
   initialBrandId = null,
+  hubId,
   onBack,
   onOpenItemModal,
 }) => {
@@ -46,14 +49,14 @@ export const MenuScreen: React.FC<MenuScreenProps> = ({
 
   const catalogue = useApi<Catalogue>(async () => {
     const [brandRows, itemRows] = await Promise.all([
-      api.getBrands(),
-      api.getMenuItems(initialBrandId || undefined),
+      api.getBrands(hubId),
+      api.getMenuItems(initialBrandId || undefined, undefined, hubId),
     ]);
     return {
       brands: mapApiBrands(brandRows),
       items: mapApiMenuItems(itemRows),
     };
-  }, [initialBrandId]);
+  }, [initialBrandId, hubId]);
 
   const items = catalogue.data?.items || [];
   const brands = catalogue.data?.brands || [];
@@ -144,6 +147,21 @@ export const MenuScreen: React.FC<MenuScreenProps> = ({
         <ArrowLeft className="w-4 h-4" />
         <span>Back to Home</span>
       </button>
+
+      {!hubId && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-start gap-3">
+          <MapPin className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-extrabold text-amber-900 dark:text-amber-200">
+              Set your delivery address
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              You are browsing the full live menu. Add an address to see only the
+              dishes the hub serving you can actually cook.
+            </p>
+          </div>
+        </div>
+      )}
 
       {activeBrand && (
         <section className="relative overflow-hidden rounded-3xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">

@@ -4,9 +4,10 @@ import { LogisticsController } from './logistics.controller';
 import { StaleTrackingCronService } from './stale-tracking-cron.service';
 import { WebsocketsModule } from '../websockets/websockets.module';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [WebsocketsModule, ReferralsModule],
+  imports: [WebsocketsModule, ReferralsModule, NotificationsModule],
   controllers: [LogisticsController],
   providers: [LogisticsService, StaleTrackingCronService],
   exports: [LogisticsService],

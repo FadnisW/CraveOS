@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 import {
   getWalletRefundsByOrder,
@@ -20,7 +21,33 @@ export class HubOpsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly websocketsGateway: OrderTrackingGateway,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  /**
+   * Handoff email is informational. The trip is already committed, so a mail
+   * failure is logged instead of failing the desk operation.
+   */
+  private async notifyOutForDelivery(orderId: string, userId: string) {
+    try {
+      const buyer = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!buyer?.email) return;
+
+      await this.notifications.sendOrderStatusEmail(
+        buyer.email,
+        orderId,
+        'OUT_FOR_DELIVERY',
+        userId,
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Order ${orderId} OUT_FOR_DELIVERY email failed: ${err?.message || 'unknown error'}`,
+      );
+    }
+  }
 
   /**
    * Hub Manager Dashboard (§5.1)
@@ -416,6 +443,8 @@ export class HubOpsService {
     });
 
     this.logger.log(`📦 Handoff confirmed for trip ${tripId} (hub ${hubId})`);
+
+    await this.notifyOutForDelivery(trip.orderId, trip.order.userId);
 
     return {
       success: true,

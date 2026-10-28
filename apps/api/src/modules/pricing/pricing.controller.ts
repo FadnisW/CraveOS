@@ -14,7 +14,11 @@ import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 interface QuoteDto {
   addressId?: string;
   hubId?: string;
-  items?: { menuItemId?: string; quantity?: number }[];
+  items?: {
+    menuItemId?: string;
+    quantity?: number;
+    options?: { groupId?: string; optionName?: string }[];
+  }[];
   couponCode?: string;
   useWalletBalancePaise?: number;
 }
@@ -71,7 +75,30 @@ export class PricingController {
         );
       }
 
-      return { menuItemId, quantity };
+      const rawOptions = Array.isArray(item?.options) ? item.options : [];
+      const options = rawOptions.map((option) => {
+        // A client-supplied option price is never accepted. The server looks
+        // the option up in the item's catalogue row.
+        for (const field of ['price', 'priceInPaise', 'memberPrice']) {
+          if (Object.prototype.hasOwnProperty.call(option || {}, field)) {
+            throw new BadRequestException(
+              `'${field}' is not accepted on an option. The server prices every choice.`,
+            );
+          }
+        }
+
+        const groupId = String(option?.groupId || '').trim();
+        const optionName = String(option?.optionName || '').trim();
+        if (!groupId || !optionName) {
+          throw new BadRequestException(
+            'Every selected option needs a groupId and optionName',
+          );
+        }
+
+        return { groupId, optionName };
+      });
+
+      return { menuItemId, quantity, options };
     });
 
     const useWalletBalancePaise = Number(body.useWalletBalancePaise ?? 0);

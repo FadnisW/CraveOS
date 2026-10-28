@@ -52,6 +52,7 @@ export class TicketsController {
       orderId?: string;
       category: string;
       priority?: string;
+      message: string;
     },
   ) {
     const actor = req.user as AuthenticatedActor;
@@ -62,8 +63,26 @@ export class TicketsController {
         orderId: body.orderId,
         category: body.category || 'OTHER',
         priority: body.priority || 'NORMAL',
+        message: body.message,
       },
       actor,
+    );
+  }
+
+  /**
+   * Reply to a live ticket. The raiser and support staff share one thread.
+   */
+  @Post(':id/messages')
+  @Roles('CUSTOMER', 'RIDER', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS', 'ADMIN')
+  async addMessage(
+    @Request() req: any,
+    @Param('id') id: string,
+    @Body('message') message: string,
+  ) {
+    return this.ticketsService.addMessage(
+      id,
+      message,
+      req.user as AuthenticatedActor,
     );
   }
 

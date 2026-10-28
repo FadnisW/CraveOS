@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   Request,
   Headers,
@@ -83,5 +84,23 @@ export class AuthController {
   @Roles('CUSTOMER', 'ADMIN', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS')
   async getMe(@Request() req: any) {
     return this.authService.getMe((req.user as AuthenticatedActor).sub);
+  }
+
+  /**
+   * The customer can change their display name and delivery phone. Email is
+   * the account identity and is not editable here; changing it would need a
+   * fresh OTP round-trip and is deliberately out of scope for this endpoint.
+   */
+  @Patch('me')
+  @Roles('CUSTOMER', 'ADMIN', 'HUB_STAFF', 'HUB_MANAGER', 'BRAND_OPS')
+  @HttpCode(200)
+  async updateMe(
+    @Request() req: any,
+    @Body() body: { name?: string; phone?: string | null },
+  ) {
+    return this.authService.updateMe(
+      (req.user as AuthenticatedActor).sub,
+      body || {},
+    );
   }
 }

@@ -15,7 +15,9 @@ import { KITCHEN_QUEUE } from '../queue/queue.constants';
 import { LogisticsService } from '../logistics/logistics.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
 import { PaymentsService } from '../payments/payments.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
+import { normaliseIndianPhone } from '../../common/utils/phone';
 
 export type { AuthenticatedActor };
 
@@ -27,9 +29,13 @@ export interface CreateOrderDto {
   couponCode?: string;
   useWalletBalancePaise?: number;
   paymentMethod?: PaymentMethod;
+  /** Delivery contact for this order. Falls back to the profile phone. */
+  contactPhone?: string;
   items: {
     menuItemId: string;
     quantity: number;
+    /** Selected size/extras, matched by name against the live catalogue row. */
+    options?: { groupId: string; optionName: string }[];
   }[];
 }
 
@@ -54,6 +60,7 @@ export class OrdersService {
     private readonly logisticsService: LogisticsService,
     private readonly websocketsGateway: OrderTrackingGateway,
     private readonly paymentsService: PaymentsService,
+    private readonly notificationsService: NotificationsService,
     @Inject(KITCHEN_QUEUE) private readonly kitchenQueue: Queue,
   ) {}
 
@@ -145,6 +152,22 @@ export class OrdersService {
       );
     }
 
+    // The rider needs a number that actually rings. The profile phone is the
+    // default, but the customer may supply a different delivery contact for
+    // this order; the order stores the number that was shown at checkout.
+    const buyer = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phone: true, email: true },
+    });
+    const contactPhone = normaliseIndianPhone(
+      dto.contactPhone ?? buyer?.phone ?? null,
+    );
+    if (!contactPhone) {
+      throw new BadRequestException(
+        'Add a delivery phone number before placing this order',
+      );
+    }
+
     let createdOrder: any;
     try {
       createdOrder = await this.prisma.$transaction(async (tx) => {
@@ -207,6 +230,7 @@ export class OrdersService {
           mrpInPaise: line.mrpInPaise,
           memberPriceInPaise: line.memberPriceInPaise,
           quantity: line.quantity,
+          options: line.options || [],
         }));
 
         // Group by the *database* brand id — never one supplied by the client.
@@ -237,6 +261,7 @@ export class OrdersService {
             walletAppliedPaise: amounts.walletAppliedPaise,
             finalPaidPaise: amounts.finalPayablePaise,
             estimatedDeliveryMins,
+            contactPhone,
             paymentMethod,
             discountBreakdown: {
               ...priceBreakdown.savingsSummary,
@@ -266,6 +291,9 @@ export class OrdersService {
                     ? l.memberPriceInPaise
                     : l.mrpInPaise,
                   quantity: l.quantity,
+                  optionsSnapshot: l.options.length
+                    ? (l.options as unknown as Prisma.InputJsonValue)
+                    : Prisma.JsonNull,
                 })),
               },
             },
@@ -392,7 +420,54 @@ export class OrdersService {
       }
     }
 
+    // The order is committed and the kitchen jobs are queued, so the customer
+    // can be told it exists. A mail failure must never roll back an order; it
+    // is logged as FAILED/SKIPPED in notification_logs instead.
+    if (createdOrder && buyer?.email) {
+      try {
+        await this.notificationsService.sendOrderPlacedEmail(
+          buyer.email,
+          createdOrder.id,
+          createdOrder.finalPaidPaise,
+          userId,
+        );
+      } catch (mailErr: any) {
+        this.logger.warn(
+          `Order ${createdOrder.id} confirmation email failed: ${mailErr?.message || 'unknown error'}`,
+        );
+      }
+    }
+
     return createdOrder;
+  }
+
+  /**
+   * Informational order email. The order state has already committed, so a
+   * provider failure is logged and never rolls back the transition.
+   */
+  private async notifyOrderStatus(
+    orderId: string,
+    userId: string,
+    status: 'ACCEPTED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED',
+  ) {
+    try {
+      const buyer = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!buyer?.email) return;
+
+      await this.notificationsService.sendOrderStatusEmail(
+        buyer.email,
+        orderId,
+        status,
+        userId,
+      );
+    } catch (mailErr: any) {
+      this.logger.warn(
+        `Order ${orderId} ${status} email failed: ${mailErr?.message || 'unknown error'}`,
+      );
+    }
   }
 
   /**
@@ -651,6 +726,13 @@ export class OrdersService {
         status: 'CANCELLED',
         reason: cancellationReason,
       });
+
+      // A repeat cancel is a no-op and must not send a second email.
+      await this.notifyOrderStatus(
+        orderId,
+        outcome.order.userId,
+        'CANCELLED',
+      );
     }
 
     return outcome.order;
@@ -858,6 +940,16 @@ export class OrdersService {
         where: { id: brandOrder.orderId },
         data: { status: 'PREPARING' },
       });
+
+      // Only the first transition from PLACED emails the customer. Later
+      // ticket moves (ACCEPTED -> PREPARING -> READY) re-enter this block.
+      if (brandOrder.order.status === 'PLACED') {
+        await this.notifyOrderStatus(
+          brandOrder.orderId,
+          brandOrder.order.userId,
+          'ACCEPTED',
+        );
+      }
 
       const tripResult = await this.logisticsService.autoAssignRider(brandOrder.orderId);
 

@@ -18,6 +18,7 @@
     "check:money-smoke": "node scripts/smoke-phase2.mjs",
     "check:auth-smoke": "node scripts/smoke-phase3.mjs",
     "check:legal-smoke": "node scripts/smoke-phase4.mjs",
+    "check:phase5-smoke": "node scripts/smoke-phase5.mjs",
     "build:release": "npm run check:legal:release && npm run build",
     "start:release": "npm run check:legal:release && next start --port 3000",
     "verify": "npm run check:no-fakes && npm run check:legal && npm run typecheck && npm run typecheck:api && npm run build && npm run build:api",

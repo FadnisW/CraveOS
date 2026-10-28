@@ -135,6 +135,7 @@ model User {
   referredUsers        User[]                @relation("UserReferrals")
   referralsMade        Referral[]            @relation("ReferralsMade")
   referralReceived     Referral?             @relation("ReferralReceived")
+  reviews              Review[]
   // Explicit, auditable consent. A new account cannot be created until the
   // signup checkbox is ticked; the version records which policy text was shown.
   termsAcceptedAt      DateTime?
@@ -286,11 +287,16 @@ model Order {
   walletAppliedPaise    Int                   @default(0) // wallet money consumed by this order (paise)
   finalPaidPaise        Int // amount charged to the payment gateway (paise)
   estimatedDeliveryMins Int                   @default(30) // prep + hub-to-address travel estimate
+  // Snapshot of the delivery contact at purchase time. The profile phone can
+  // change later; the rider and support need the number that was actually
+  // given for this order.
+  contactPhone          String?
   discountBreakdown     Json // { membership, coupon, wallet }
   brandOrders           BrandOrder[]
   payment               Payment?
   deliveryTrip          DeliveryTrip?
   promotionRedemptions  PromotionRedemption[]
+  review                Review?
   user                  User                  @relation(fields: [userId], references: [id])
   address               Address               @relation(fields: [addressId], references: [id])
   hub                   Hub                   @relation(fields: [hubId], references: [id])
@@ -317,14 +323,17 @@ model BrandOrder {
 }
 
 model OrderItem {
-  id            String     @id @default(cuid())
-  brandOrderId  String
-  menuItemId    String
-  nameSnapshot  String
-  mrpSnapshot   Int        @default(0) // MRP per unit at purchase time (paise)
-  priceSnapshot Int // effective price paid per unit (paise)
-  quantity      Int
-  brandOrder    BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
+  id              String     @id @default(cuid())
+  brandOrderId    String
+  menuItemId      String
+  nameSnapshot    String
+  mrpSnapshot     Int        @default(0) // MRP per unit at purchase time (paise)
+  priceSnapshot   Int // effective price paid per unit (paise)
+  quantity        Int
+  // Resolved variant/add-on names and prices at purchase time. Null for a
+  // plain item with no choices, so the kitchen ticket still reads correctly.
+  optionsSnapshot Json?
+  brandOrder      BrandOrder @relation(fields: [brandOrderId], references: [id], onDelete: Cascade)
 
   @@map("order_items")
 }
@@ -513,21 +522,77 @@ model RiderEarning {
 }
 
 model Ticket {
-  id             String       @id @default(cuid())
+  id             String          @id @default(cuid())
   raisedByType   String // CUSTOMER / HUB / BRAND_OPS / RIDER
   raisedById     String
   orderId        String?
   category       String // MISSING_ITEM / WRONG_ITEM / LATE_DELIVERY / PAYMENT_ISSUE / RIDER_SAFETY / OTHER
-  status         TicketStatus @default(OPEN)
+  status         TicketStatus    @default(OPEN)
   assignedToId   String?
-  priority       String       @default("NORMAL")
+  priority       String          @default("NORMAL")
   resolutionNote String?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime        @default(now())
   resolvedAt     DateTime?
+  messages       TicketMessage[]
 
   @@index([status, priority])
   @@index([raisedById])
   @@map("tickets")
+}
+
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  authorId   String
+  authorType String // CUSTOMER / HUB / BRAND_OPS / RIDER / ADMIN
+  body       String
+  createdAt  DateTime @default(now())
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model Review {
+  id            String       @id @default(cuid())
+  orderId       String       @unique
+  userId        String
+  // A multi-brand order produces one review that appears under each brand it
+  // actually contained. No rating is stored: the storefront shows text only.
+  brandIds      String[]
+  body          String
+  status        ReviewStatus @default(PENDING)
+  moderatedById String?
+  moderatedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order         Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([brandIds], type: Gin)
+  @@map("reviews")
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model NotificationLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  orderId    String?
+  kind       String // ORDER_PLACED / ORDER_ACCEPTED / OUT_FOR_DELIVERY / DELIVERED / CANCELLED / MEMBERSHIP
+  recipient  String
+  status     String // SENT / FAILED / SKIPPED
+  providerId String?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([orderId, kind])
+  @@index([status, createdAt])
+  @@map("notification_logs")
 }
 
 model DeliveryTrip {

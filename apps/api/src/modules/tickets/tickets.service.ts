@@ -16,6 +16,7 @@ interface CreateTicketDto {
   orderId?: string;
   category: string;
   priority?: string;
+  message: string;
 }
 
 interface TicketFilters {
@@ -88,19 +89,42 @@ export class TicketsService {
       throw new BadRequestException('A ticket category is required');
     }
 
+    const message = String(data?.message || '').trim();
+    if (message.length < 5) {
+      throw new BadRequestException(
+        'Describe the problem in at least 5 characters so support can help',
+      );
+    }
+    if (message.length > 4000) {
+      throw new BadRequestException('A ticket message cannot exceed 4000 characters');
+    }
+
     if (data.orderId) {
       await this.assertOrderAccess(data.orderId, actor);
     }
 
-    const ticket = await this.prisma.ticket.create({
-      data: {
-        raisedByType: data.raisedByType,
-        raisedById: data.raisedById,
-        orderId: data.orderId,
-        category,
-        status: 'OPEN',
-        priority: data.priority || 'NORMAL',
-      },
+    const ticket = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.ticket.create({
+        data: {
+          raisedByType: data.raisedByType,
+          raisedById: data.raisedById,
+          orderId: data.orderId,
+          category,
+          status: 'OPEN',
+          priority: data.priority || 'NORMAL',
+        },
+      });
+
+      await tx.ticketMessage.create({
+        data: {
+          ticketId: created.id,
+          authorId: data.raisedById,
+          authorType: data.raisedByType,
+          body: message,
+        },
+      });
+
+      return created;
     });
 
     // Emit WebSocket event to admin tickets room
@@ -109,6 +133,57 @@ export class TicketsService {
     this.logger.log(`🎫 New ticket created: ${ticket.id} by ${data.raisedByType} ${data.raisedById}`);
 
     return ticket;
+  }
+
+  /**
+   * Adds a message to an existing ticket.
+   *
+   * The raiser and support staff can both reply while the ticket is live. A
+   * resolved or closed ticket is read-only: reopening it silently would make
+   * the resolution note and the audit trail lie.
+   */
+  async addMessage(id: string, body: string, actor: AuthenticatedActor) {
+    const message = String(body || '').trim();
+    if (message.length < 1) {
+      throw new BadRequestException('A message is required');
+    }
+    if (message.length > 4000) {
+      throw new BadRequestException('A ticket message cannot exceed 4000 characters');
+    }
+
+    const ticket = await this.prisma.ticket.findUnique({ where: { id } });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket ${id} not found`);
+    }
+
+    const isAdmin = actor?.role === 'ADMIN';
+    if (!isAdmin && ticket.raisedById !== actor?.sub) {
+      throw new ForbiddenException('This ticket does not belong to you');
+    }
+    if (ticket.status === 'CLOSED' || ticket.status === 'RESOLVED') {
+      throw new BadRequestException(
+        'This ticket is already resolved. Open a new ticket if you still need help.',
+      );
+    }
+
+    const created = await this.prisma.ticketMessage.create({
+      data: {
+        ticketId: id,
+        authorId: actor.sub,
+        authorType: isAdmin ? 'ADMIN' : ticket.raisedByType,
+        body: message,
+      },
+    });
+
+    // The customer sees support replies live; support sees customer replies.
+    this.websocketsGateway.server
+      .to(`user:${ticket.raisedById}`)
+      .emit('ticketMessageCreated', created);
+    this.websocketsGateway.server
+      .to('admin:tickets')
+      .emit('ticketMessageCreated', created);
+
+    return created;
   }
 
   /**
@@ -135,6 +210,7 @@ export class TicketsService {
 
     return this.prisma.ticket.findMany({
       where,
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -145,6 +221,7 @@ export class TicketsService {
   async getTicketById(id: string, actor: AuthenticatedActor) {
     const ticket = await this.prisma.ticket.findUnique({
       where: { id },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
     });
 
     if (!ticket) {
@@ -317,6 +394,7 @@ export class TicketsService {
 
     return this.prisma.ticket.findMany({
       where: { raisedById: userId },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
       orderBy: { createdAt: 'desc' },
     });
   }

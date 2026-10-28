@@ -1,14 +1,34 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
-type DeliveryResult = { success: true } | { success: false; error: string };
+type DeliveryResult =
+  | { success: true; providerId?: string }
+  | { success: false; error: string };
+
+type LifecycleKind =
+  | 'ORDER_PLACED'
+  | 'ORDER_ACCEPTED'
+  | 'OUT_FOR_DELIVERY'
+  | 'DELIVERED'
+  | 'CANCELLED'
+  | 'MEMBERSHIP';
+
+interface LifecycleEmail {
+  kind: LifecycleKind;
+  email: string;
+  userId?: string | null;
+  orderId?: string | null;
+  subject: string;
+  html: string;
+}
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private readonly resend: Resend | null = null;
 
-  constructor() {
+  constructor(private readonly prisma: PrismaService) {
     const apiKey = process.env.RESEND_API_KEY || '';
     if (apiKey) {
       this.resend = new Resend(apiKey);
@@ -66,7 +86,7 @@ export class NotificationsService {
 
       this.logger.log(`${kind} email accepted by Resend (id ${data?.id ?? 'unknown'})`);
       // no-fakes-allow: silent-notification-success Resend accepted the message and returned no error.
-      return { success: true };
+      return { success: true, providerId: data?.id };
     } catch (err: any) {
       this.logger.error(`Resend ${kind} email failed: ${err?.message || 'unknown error'}`);
       return { success: false, error: err?.message || 'The email provider is unreachable.' };
@@ -139,5 +159,151 @@ export class NotificationsService {
         </div>
       `,
     );
+  }
+
+  /**
+   * Sends a customer lifecycle email and records the outcome in
+   * `notification_logs`. A missing provider is recorded as SKIPPED, never as a
+   * successful send, so operations can see exactly which messages never left.
+   */
+  private async sendLifecycle(input: LifecycleEmail): Promise<DeliveryResult> {
+    // Status emails are edge-triggered. The hub handoff desk and the rider
+    // pickup endpoint can both mark the same order OUT_FOR_DELIVERY, so a
+    // previously SENT row for this order+kind is the idempotency guard.
+    if (input.orderId) {
+      const alreadySent = await this.prisma.notificationLog.findFirst({
+        where: {
+          orderId: input.orderId,
+          kind: input.kind,
+          status: 'SENT',
+        },
+        select: { id: true },
+      });
+      // no-fakes-allow: silent-notification-success A duplicate is not a send; the first SENT row proves delivery.
+      if (alreadySent) return { success: true };
+    }
+
+    const recipient = this.recipient(input.email);
+    const kind = input.kind === 'MEMBERSHIP' ? 'membership' : 'orders';
+    const result = await this.send(kind, input.email, input.subject, input.html);
+
+    const status = result.success
+      ? 'SENT'
+      : result.error.includes('not configured')
+        ? 'SKIPPED'
+        : 'FAILED';
+
+    try {
+      await this.prisma.notificationLog.create({
+        data: {
+          userId: input.userId ?? null,
+          orderId: input.orderId ?? null,
+          kind: input.kind,
+          recipient,
+          status,
+          providerId: result.success ? result.providerId ?? null : null,
+          error: result.success ? null : result.error,
+        },
+      });
+    } catch (err: any) {
+      // A logging failure must not break the order or payment flow.
+      this.logger.error(
+        `Failed to record ${input.kind} notification: ${err?.message || 'unknown error'}`,
+      );
+    }
+
+    return result;
+  }
+
+  async sendOrderPlacedEmail(
+    email: string,
+    orderId: string,
+    amountPaise: number,
+    userId?: string | null,
+  ): Promise<DeliveryResult> {
+    return this.sendLifecycle({
+      kind: 'ORDER_PLACED',
+      email,
+      userId,
+      orderId,
+      subject: `Order ${orderId.slice(0, 8)} confirmed`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb;">
+          <h1 style="font-size: 26px; font-weight: 900; color: #e11d48; margin: 0 0 16px;">CraveOS</h1>
+          <h2 style="color: #111827; font-size: 20px;">Your order is confirmed</h2>
+          <p style="color: #374151; font-size: 14px;">Order <strong>${orderId}</strong> has reached the kitchen.</p>
+          <p style="color: #374151; font-size: 14px;">Amount paid: <strong>₹${(amountPaise / 100).toFixed(2)}</strong></p>
+          <p style="color: #6b7280; font-size: 12px;">Track the live status in your order history.</p>
+        </div>
+      `,
+    });
+  }
+
+  async sendOrderStatusEmail(
+    email: string,
+    orderId: string,
+    status: 'ACCEPTED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED',
+    userId?: string | null,
+  ): Promise<DeliveryResult> {
+    const copy = {
+      ACCEPTED: {
+        subject: `Order ${orderId.slice(0, 8)} accepted by the kitchen`,
+        heading: 'The kitchen accepted your order',
+        body: 'Your food is now being prepared.',
+      },
+      OUT_FOR_DELIVERY: {
+        subject: `Order ${orderId.slice(0, 8)} is on the way`,
+        heading: 'Your order is out for delivery',
+        body: 'The rider is on the way. Keep your delivery code ready.',
+      },
+      DELIVERED: {
+        subject: `Order ${orderId.slice(0, 8)} delivered`,
+        heading: 'Delivered. Enjoy your meal.',
+        body: 'You can now write a verified-purchase review from your order history.',
+      },
+      CANCELLED: {
+        subject: `Order ${orderId.slice(0, 8)} cancelled`,
+        heading: 'Your order was cancelled',
+        body: 'Any amount collected is returned by the server: wallet credit immediately, card and UPI to the original method in 5-7 working days.',
+      },
+    }[status];
+
+    return this.sendLifecycle({
+      kind: status === 'ACCEPTED' ? 'ORDER_ACCEPTED' : status,
+      email,
+      userId,
+      orderId,
+      subject: copy.subject,
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb;">
+          <h1 style="font-size: 26px; font-weight: 900; color: #e11d48; margin: 0 0 16px;">CraveOS</h1>
+          <h2 style="color: #111827; font-size: 20px;">${copy.heading}</h2>
+          <p style="color: #374151; font-size: 14px;">${copy.body}</p>
+          <p style="color: #6b7280; font-size: 12px;">Order <strong>${orderId}</strong></p>
+        </div>
+      `,
+    });
+  }
+
+  async sendMembershipActiveEmail(
+    email: string,
+    planName: string,
+    endsAt: Date,
+    userId?: string | null,
+  ): Promise<DeliveryResult> {
+    return this.sendLifecycle({
+      kind: 'MEMBERSHIP',
+      email,
+      userId,
+      subject: `${planName} is active`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb;">
+          <h1 style="font-size: 26px; font-weight: 900; color: #e11d48; margin: 0 0 16px;">CraveOS</h1>
+          <h2 style="color: #111827; font-size: 20px;">${planName} is active</h2>
+          <p style="color: #374151; font-size: 14px;">Member pricing and free delivery now apply to your orders.</p>
+          <p style="color: #374151; font-size: 14px;">Valid until <strong>${endsAt.toLocaleDateString('en-IN')}</strong>.</p>
+        </div>
+      `,
+    });
   }
 }

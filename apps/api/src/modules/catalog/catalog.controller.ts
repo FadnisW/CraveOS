@@ -8,16 +8,25 @@ import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 export class CatalogController {
   constructor(private readonly catalogService: CatalogService) {}
 
+  @Get('hubs')
+  @Public()
+  async getHubs() {
+    return this.catalogService.getHubs();
+  }
+
   @Get('brands')
   @Public()
-  async getAllBrands() {
-    return this.catalogService.getAllBrands();
+  async getAllBrands(@Query('hubId') hubId?: string) {
+    return this.catalogService.getAllBrands(hubId);
   }
 
   @Get('brands/:slug')
   @Public()
-  async getBrandBySlug(@Param('slug') slug: string) {
-    return this.catalogService.getBrandBySlug(slug);
+  async getBrandBySlug(
+    @Param('slug') slug: string,
+    @Query('hubId') hubId?: string,
+  ) {
+    return this.catalogService.getBrandBySlug(slug, hubId);
   }
 
   @Get('items')
@@ -25,14 +34,15 @@ export class CatalogController {
   async getMenuItems(
     @Query('brand') brandSlug?: string,
     @Query('category') category?: string,
+    @Query('hubId') hubId?: string,
   ) {
-    return this.catalogService.getMenuItems(brandSlug, category);
+    return this.catalogService.getMenuItems(brandSlug, category, hubId);
   }
 
   @Get('search')
   @Public()
-  async searchItems(@Query('q') query: string) {
-    return this.catalogService.searchItems(query);
+  async searchItems(@Query('q') query: string, @Query('hubId') hubId?: string) {
+    return this.catalogService.searchItems(query, hubId);
   }
 
   @Patch('items/:id/86')

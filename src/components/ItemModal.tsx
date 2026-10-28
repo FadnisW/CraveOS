@@ -3,6 +3,11 @@
 import React, { useState } from 'react';
 import { MenuItem, CartItemOption } from '../types';
 import { useCart } from '../context/CartContext';
+import { useUser } from '../context/UserContext';
+import {
+  unitMemberPriceFor,
+  unitMrpFor,
+} from '../lib/pricing';
 import { X, Plus, Minus, Check, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -15,6 +20,8 @@ export const ItemModal: React.FC<ItemModalProps> = ({ item, onClose }) => {
   if (!item) return null;
 
   const { addToCart } = useCart();
+  const { user } = useUser();
+  const isMember = !!user?.isMember;
   const [quantity, setQuantity] = useState<number>(1);
   const [selectedOptions, setSelectedOptions] = useState<CartItemOption[]>(() => {
     // Select first options by default for required groups
@@ -58,9 +65,11 @@ export const ItemModal: React.FC<ItemModalProps> = ({ item, onClose }) => {
     });
   };
 
-  const optionsExtraPrice = selectedOptions.reduce((acc, opt) => acc + opt.price, 0);
-  const unitPrice = item.memberPrice + optionsExtraPrice;
+  const mrpUnitPrice = unitMrpFor(item, selectedOptions);
+  const memberUnitPrice = unitMemberPriceFor(item, selectedOptions);
+  const unitPrice = isMember ? memberUnitPrice : mrpUnitPrice;
   const totalPrice = unitPrice * quantity;
+  const mrpTotalPrice = mrpUnitPrice * quantity;
 
   const handleAddToCart = () => {
     addToCart(item, quantity, selectedOptions);
@@ -110,6 +119,13 @@ export const ItemModal: React.FC<ItemModalProps> = ({ item, onClose }) => {
                   </span>
                 </div>
 
+                {group.id === 'variant' && (
+                  <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                    The size you pick sets the item price; it is not an extra
+                    charge.
+                  </p>
+                )}
+
                 <div className="space-y-2">
                   {group.options.map((option) => {
                     const isSelected = selectedOptions.some(
@@ -144,7 +160,11 @@ export const ItemModal: React.FC<ItemModalProps> = ({ item, onClose }) => {
                         </div>
 
                         {option.price > 0 && (
-                          <span className="font-bold text-gray-900 dark:text-white">+₹{option.price}</span>
+                          <span className="font-bold text-gray-900 dark:text-white">
+                            {group.id === 'variant'
+                              ? `₹${option.price}`
+                              : `+₹${option.price}`}
+                          </span>
                         )}
                       </button>
                     );
@@ -181,7 +201,14 @@ export const ItemModal: React.FC<ItemModalProps> = ({ item, onClose }) => {
               className="flex-1 py-3 px-6 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-sm shadow-md shadow-rose-600/30 flex items-center justify-between transition-colors"
             >
               <span>Add to Cart</span>
-              <span>₹{totalPrice}</span>
+              <span className="flex items-baseline gap-2">
+                {isMember && mrpTotalPrice > totalPrice && (
+                  <span className="text-[11px] font-bold text-white/60 line-through">
+                    ₹{mrpTotalPrice}
+                  </span>
+                )}
+                <span>₹{totalPrice}</span>
+              </span>
             </button>
           </div>
         </motion.div>

@@ -187,6 +187,8 @@ export interface Order {
   paymentStatus: 'INITIATED' | 'SUCCESS' | 'FAILED' | 'REFUNDED' | 'UNKNOWN';
   /** Absent when the server could not compute a delivery estimate. */
   estimatedDeliveryMins?: number;
+  /** The delivery contact given for this order, as stored on the order. */
+  contactPhone?: string | null;
   rider?: {
     name: string;
     phone: string;

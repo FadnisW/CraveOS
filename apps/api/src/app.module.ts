@@ -18,6 +18,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { HubOpsModule } from './modules/hub-ops/hub-ops.module';
 import { BrandOpsModule } from './modules/brand-ops/brand-ops.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
 import { MembershipModule } from './modules/membership/membership.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -65,6 +66,7 @@ import { HealthModule } from './modules/health/health.module';
     AddressesModule,
     MembershipModule,
     ReferralsModule,
+    ReviewsModule,
     HealthModule,
   ],
   providers: [

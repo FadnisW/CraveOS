@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api-client';
 import { useUser } from '../context/UserContext';
 import { useApi } from '../hooks/useApi';
@@ -16,6 +16,8 @@ import {
   MapPin,
   Plus,
   Receipt,
+  Save,
+  UserRound,
   Wallet,
 } from 'lucide-react';
 
@@ -173,6 +175,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const [purchaseNotice, setPurchaseNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  const [profileName, setProfileName] = useState<string>(user?.name || '');
+  const [profilePhone, setProfilePhone] = useState<string>(user?.phone || '');
+  const [profileSaving, setProfileSaving] = useState<boolean>(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setProfileName(user?.name || '');
+    setProfilePhone(user?.phone || '');
+  }, [user?.id, user?.name, user?.phone]);
 
   if (!isAuthenticated || !user) {
     return (
@@ -299,6 +311,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
+  const saveProfile = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileNotice(null);
+
+    try {
+      const result = await api.updateProfile({
+        name: profileName.trim(),
+        phone: profilePhone.trim() || null,
+      });
+      refreshUser(result.user);
+      setProfileNotice('Profile updated.');
+    } catch (err: any) {
+      setProfileError(err?.message || 'Could not update your profile.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
       <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-rose-950 text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
@@ -333,6 +365,73 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </div>
       </div>
+
+      <form
+        onSubmit={saveProfile}
+        className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4"
+      >
+        <div className="flex items-center gap-2">
+          <UserRound className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+          <div>
+            <h3 className="text-sm font-extrabold text-gray-900 dark:text-white">
+              Profile
+            </h3>
+            <p className="text-[11px] text-gray-500 dark:text-slate-400">
+              Your name and the phone the rider calls on delivery. Email is your
+              sign-in identity and cannot be changed here.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="text-[11px] font-bold text-gray-600 dark:text-slate-300">
+              Display name
+            </span>
+            <input
+              type="text"
+              value={profileName}
+              onChange={(event) => setProfileName(event.target.value)}
+              maxLength={80}
+              placeholder="Your name"
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+            />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-bold text-gray-600 dark:text-slate-300">
+              Delivery phone
+            </span>
+            <input
+              type="tel"
+              value={profilePhone}
+              onChange={(event) => setProfilePhone(event.target.value)}
+              placeholder="10-digit Indian mobile"
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+            />
+          </label>
+        </div>
+
+        {profileError && (
+          <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+            {profileError}
+          </p>
+        )}
+        {profileNotice && (
+          <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+            {profileNotice}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={profileSaving}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-extrabold"
+        >
+          <Save className="w-3.5 h-3.5" />
+          {profileSaving ? 'Saving…' : 'Save profile'}
+        </button>
+      </form>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-sm space-y-4">

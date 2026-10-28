@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
 import { ReferralsService } from '../referrals/referrals.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 @Injectable()
@@ -19,7 +20,37 @@ export class LogisticsService {
     private readonly prisma: PrismaService,
     private readonly websocketsGateway: OrderTrackingGateway,
     private readonly referralsService: ReferralsService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  /**
+   * Informational lifecycle email. Failures are logged, never thrown: a
+   * delivery must not fail because an email provider is down.
+   */
+  private async notifyOrderStatus(
+    orderId: string,
+    userId: string,
+    status: 'ACCEPTED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED',
+  ) {
+    try {
+      const buyer = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!buyer?.email) return;
+
+      await this.notifications.sendOrderStatusEmail(
+        buyer.email,
+        orderId,
+        status,
+        userId,
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Order ${orderId} ${status} email failed: ${err?.message || 'unknown error'}`,
+      );
+    }
+  }
 
   /**
    * A hub manager may only dispatch trips that belong to their own hub.
@@ -455,6 +486,12 @@ export class LogisticsService {
 
     this.logger.log(`📦 Rider ${riderId} picked up order for trip ${tripId}`);
 
+    await this.notifyOrderStatus(
+      trip.orderId,
+      trip.order.userId,
+      'OUT_FOR_DELIVERY',
+    );
+
     return { trip: this.withoutDeliveryOtp(updatedTrip) };
   }
 
@@ -624,6 +661,8 @@ export class LogisticsService {
     this.logger.log(
       `✅ Trip ${tripId} delivered by rider ${riderId}. Earnings: ₹${(baseFee + distanceFee) / 100}`,
     );
+
+    await this.notifyOrderStatus(trip.orderId, trip.order.userId, 'DELIVERED');
 
     return updatedTrip;
   }

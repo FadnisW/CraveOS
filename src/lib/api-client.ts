@@ -89,16 +89,40 @@ export const api = {
   /** The signed-in account with membership, wallet and addresses. */
   getMe: () => apiRequest('/auth/me'),
 
+  /** Customer-editable profile fields: display name and delivery phone. */
+  updateProfile: (data: { name?: string; phone?: string | null }) =>
+    apiRequest('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
   // Catalog
-  getBrands: () => apiRequest('/catalog/brands'),
-  getBrandBySlug: (slug: string) => apiRequest(`/catalog/brands/${slug}`),
-  getMenuItems: (brandSlug?: string, category?: string) => {
+  getBrands: (hubId?: string) =>
+    apiRequest(
+      hubId
+        ? `/catalog/brands?hubId=${encodeURIComponent(hubId)}`
+        : '/catalog/brands',
+    ),
+  /** Public kitchen locations, used only to centre the address map. */
+  getHubs: () => apiRequest('/catalog/hubs'),
+  getBrandBySlug: (slug: string, hubId?: string) =>
+    apiRequest(
+      hubId
+        ? `/catalog/brands/${encodeURIComponent(slug)}?hubId=${encodeURIComponent(hubId)}`
+        : `/catalog/brands/${encodeURIComponent(slug)}`,
+    ),
+  getMenuItems: (brandSlug?: string, category?: string, hubId?: string) => {
     const params = new URLSearchParams();
     if (brandSlug) params.append('brand', brandSlug);
     if (category) params.append('category', category);
+    if (hubId) params.append('hubId', hubId);
     return apiRequest(`/catalog/items?${params.toString()}`);
   },
-  searchItems: (query: string) => apiRequest(`/catalog/search?q=${encodeURIComponent(query)}`),
+  searchItems: (query: string, hubId?: string) => {
+    const params = new URLSearchParams({ q: query });
+    if (hubId) params.append('hubId', hubId);
+    return apiRequest(`/catalog/search?${params.toString()}`);
+  },
   resolveServiceability: (lat: number, lng: number) =>
     apiRequest('/catalog/serviceability/resolve', {
       method: 'POST',
@@ -115,7 +139,11 @@ export const api = {
   quoteOrder: (payload: {
     addressId?: string;
     hubId?: string;
-    items: { menuItemId: string; quantity: number }[];
+    items: {
+      menuItemId: string;
+      quantity: number;
+      options?: { groupId: string; optionName: string }[];
+    }[];
     couponCode?: string;
     useWalletBalancePaise?: number;
   }) =>
@@ -333,7 +361,38 @@ export const api = {
 
     getUserTickets: (userId: string) => apiRequest(`/tickets/user/${userId}`),
 
+    /** Reply in the customer/support thread while the ticket is live. */
+    addMessage: (id: string, message: string) =>
+      apiRequest(`/tickets/${id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      }),
+
     getStats: () => apiRequest('/tickets/stats'),
+  },
+
+  // Verified-purchase reviews (text only; published after moderation)
+  reviews: {
+    getForBrand: (slug: string) =>
+      apiRequest(`/reviews/brands/${encodeURIComponent(slug)}`),
+    create: (orderId: string, body: string) =>
+      apiRequest('/reviews', {
+        method: 'POST',
+        body: JSON.stringify({ orderId, body }),
+      }),
+    getForOrder: (orderId: string) =>
+      apiRequest(`/reviews/orders/${encodeURIComponent(orderId)}`),
+    listForModeration: (status?: string) =>
+      apiRequest(
+        status
+          ? `/reviews/moderation?status=${encodeURIComponent(status)}`
+          : '/reviews/moderation',
+      ),
+    moderate: (id: string, status: 'APPROVED' | 'REJECTED', note?: string) =>
+      apiRequest(`/reviews/${id}/moderate`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, note }),
+      }),
   },
 
   // Admin Module

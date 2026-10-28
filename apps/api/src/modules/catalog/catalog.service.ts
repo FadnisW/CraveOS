@@ -5,8 +5,25 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 export class CatalogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getAllBrands() {
+  /**
+   * Public hub locations.
+   *
+   * Used only as the starting viewport for the address pin. The customer still
+   * has to place the pin on their own door; a hub coordinate is never saved as
+   * a delivery address by itself.
+   */
+  async getHubs() {
+    return this.prisma.hub.findMany({
+      select: { id: true, name: true, city: true, lat: true, lng: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async getAllBrands(hubId?: string) {
     return this.prisma.brand.findMany({
+      where: hubId
+        ? { brandKitchens: { some: { hubId, isOpen: true } } }
+        : undefined,
       orderBy: { name: 'asc' },
       include: {
         _count: {
@@ -16,11 +33,12 @@ export class CatalogService {
     });
   }
 
-  async getBrandBySlug(slug: string) {
+  async getBrandBySlug(slug: string, hubId?: string) {
     const brand = await this.prisma.brand.findUnique({
       where: { slug },
       include: {
         brandKitchens: {
+          where: hubId ? { hubId, isOpen: true } : undefined,
           include: {
             menuItems: {
               where: { isAvailable: true },
@@ -89,11 +107,16 @@ export class CatalogService {
     return result;
   }
 
-  async getMenuItems(brandSlug?: string, category?: string) {
+  async getMenuItems(brandSlug?: string, category?: string, hubId?: string) {
     const rows = await this.prisma.menuItem.findMany({
       where: {
-        ...(brandSlug
-          ? { brandKitchen: { brand: { slug: brandSlug } } }
+        ...(brandSlug || hubId
+          ? {
+              brandKitchen: {
+                ...(brandSlug ? { brand: { slug: brandSlug } } : {}),
+                ...(hubId ? { hubId, isOpen: true } : {}),
+              },
+            }
           : {}),
         ...(category ? { category: { contains: category, mode: 'insensitive' } } : {}),
       },
@@ -119,11 +142,12 @@ export class CatalogService {
     return this.collapseMenuRows(rows);
   }
 
-  async searchItems(query: string) {
+  async searchItems(query: string, hubId?: string) {
     if (!query || query.trim().length === 0) return [];
 
     const rows = await this.prisma.menuItem.findMany({
       where: {
+        ...(hubId ? { brandKitchen: { hubId, isOpen: true } } : {}),
         OR: [
           { name: { contains: query, mode: 'insensitive' } },
           { description: { contains: query, mode: 'insensitive' } },
@@ -300,18 +324,9 @@ export class CatalogService {
       }
     });
 
-    // Fallback: If customer is within 8km radius of hub center (approx 0.08 deg), match nearest hub
-    if (!matchedHub) {
-      let minDistance = Number.MAX_VALUE;
-      for (const hub of hubs) {
-        const dist = Math.sqrt(Math.pow(hub.lat - lat, 2) + Math.pow(hub.lng - lng, 2));
-        if (dist < 0.08 && dist < minDistance) {
-          minDistance = dist;
-          matchedHub = hub;
-        }
-      }
-    }
-
+    // The service polygon is the delivery contract. There is deliberately no
+    // radius fallback: an address outside the polygon is not serviceable, even
+    // if it is physically close to the kitchen.
     if (!matchedHub) {
       const unserviceableResult = {
         isServiceable: false,

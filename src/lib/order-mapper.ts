@@ -43,6 +43,12 @@ type ApiOrderItem = {
   mrpSnapshot?: number;
   priceSnapshot: number;
   quantity: number;
+  optionsSnapshot?: Array<{
+    groupId?: string;
+    groupTitle?: string;
+    name?: string;
+    priceInPaise?: number;
+  }> | null;
 };
 
 type ApiBrandOrder = {
@@ -65,6 +71,7 @@ export type ApiOrder = {
   walletAppliedPaise?: number;
   finalPaidPaise: number;
   estimatedDeliveryMins?: number;
+  contactPhone?: string | null;
   discountBreakdown?: { couponDiscount?: number } | null;
   brandOrders?: ApiBrandOrder[];
   address?: ApiAddress | null;
@@ -148,7 +155,33 @@ function mapCartItems(order: ApiOrder): CartItem[] {
           isAvailable: true,
         },
         quantity: item.quantity,
-        selectedOptions: [],
+        selectedOptions: (item.optionsSnapshot || [])
+          .map((option, index) => {
+            const groupId =
+              option.groupId === 'variant' ? 'variant' : 'addons';
+            const optionName = String(option.name || '').trim();
+            if (!optionName) return null;
+
+            return {
+              groupId,
+              groupTitle:
+                option.groupTitle || (groupId === 'variant' ? 'Size' : 'Extra'),
+              optionId: `${groupId}-${index}`,
+              optionName,
+              price: paiseToRupees(option.priceInPaise),
+            };
+          })
+          .filter(
+            (
+              option,
+            ): option is {
+              groupId: string;
+              groupTitle: string;
+              optionId: string;
+              optionName: string;
+              price: number;
+            } => option !== null,
+          ),
         unitPrice,
         totalPrice: unitPrice * item.quantity,
       };
@@ -202,6 +235,7 @@ export function mapApiOrder(order: ApiOrder): Order {
       typeof order.estimatedDeliveryMins === 'number' && order.estimatedDeliveryMins > 0
         ? order.estimatedDeliveryMins
         : undefined,
+    contactPhone: order.contactPhone || null,
     rider: rider
       ? {
           name: rider.name,

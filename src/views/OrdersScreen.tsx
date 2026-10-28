@@ -1,11 +1,15 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Order, OrderStatus } from '../types';
+import { useRouter } from 'next/navigation';
+import { Order, OrderStatus, CartItemOption, MenuItem } from '../types';
 import { api } from '../lib/api-client';
 import { socketBaseUrl } from '../lib/socket';
 import { mapApiOrder, mapApiOrders } from '../lib/order-mapper';
+import { mapApiMenuItems } from '../lib/catalog-mapper';
 import { useUser } from '../context/UserContext';
+import { useCart } from '../context/CartContext';
+import { useShop } from '../context/ShopContext';
 import {
   Clock,
   MapPin,
@@ -21,12 +25,18 @@ import {
   PackageCheck,
   Receipt,
   KeyRound,
+  History,
+  RotateCcw,
+  ChevronRight,
+  MessageSquareQuote,
+  Send,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 interface OrdersScreenProps {
   activeOrder: Order | null;
   onBackToHome: () => void;
+  onSelectOrder?: (orderId: string) => void;
 }
 
 const ACTIVE_STATUSES: OrderStatus[] = [
@@ -79,8 +89,12 @@ const BRAND_STATUS_STYLE: Record<string, string> = {
 export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   activeOrder: initialOrder,
   onBackToHome,
+  onSelectOrder,
 }) => {
+  const router = useRouter();
   const { user } = useUser();
+  const { addToCart } = useCart();
+  const { activeAddress } = useShop();
   const [activeOrder, setActiveOrder] = useState<Order | null>(initialOrder);
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -89,12 +103,82 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const [cancelling, setCancelling] = useState<boolean>(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
+  const [history, setHistory] = useState<Order[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [reorderingId, setReorderingId] = useState<string | null>(null);
+  const [reorderNotice, setReorderNotice] = useState<string | null>(null);
+  const [review, setReview] = useState<any>(null);
+  const [reviewDraft, setReviewDraft] = useState<string>('');
+  const [reviewLoading, setReviewLoading] = useState<boolean>(false);
+  const [reviewSubmitting, setReviewSubmitting] = useState<boolean>(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   // Keep the delivery countdown honest while the page stays open.
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+
+  const loadHistory = useCallback(async () => {
+    if (!user?.id) {
+      setHistory([]);
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const rows = await api.getUserOrders(user.id);
+      setHistory(mapApiOrders(Array.isArray(rows) ? rows : []));
+      setHistoryError(null);
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Could not load your order history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
+
+  // The review belongs to the delivered order, not to the browser. Re-read it
+  // so the customer sees the real moderation state after a reload.
+  useEffect(() => {
+    const orderId = activeOrder?.id;
+    const delivered = activeOrder?.status === 'DELIVERED';
+
+    if (!orderId || !delivered) {
+      setReview(null);
+      setReviewDraft('');
+      setReviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setReviewLoading(true);
+    setReviewError(null);
+
+    api.reviews
+      .getForOrder(orderId)
+      .then((result: any) => {
+        if (cancelled) return;
+        setReview(result?.review || null);
+        setReviewDraft(result?.review?.body || '');
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setReviewError(err?.message || 'Could not load your review.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeOrder?.id, activeOrder?.status]);
 
   useEffect(() => {
     setActiveOrder(initialOrder);
@@ -259,6 +343,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
     try {
       await api.cancelOrder(activeOrder.id, 'Cancelled by customer');
       await refreshOrder(activeOrder.id);
+      await loadHistory();
       setShowCancelConfirm(false);
     } catch (err: any) {
       setCancelError(err?.message || 'Could not cancel this order.');
@@ -267,20 +352,282 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
     }
   };
 
+  /**
+   * Rebuilds the cart from a past order using live catalogue rows.
+   *
+   * A past order is a record, not a promise that the item still exists. Every
+   * line is matched against the current hub menu; unavailable items and
+   * retired options are skipped and named instead of silently added at an old
+   * price.
+   */
+  const handleReorder = async (order: Order) => {
+    setReorderingId(order.id);
+    setReorderNotice(null);
+
+    try {
+      const rows = await api.getMenuItems(
+        undefined,
+        undefined,
+        activeAddress?.resolvedHubId,
+      );
+      const liveItems = mapApiMenuItems(rows);
+      const byId = new Map<string, MenuItem>(
+        liveItems.map((item) => [item.id, item]),
+      );
+
+      let added = 0;
+      const skipped: string[] = [];
+
+      for (const line of order.items) {
+        const live = byId.get(line.item.id);
+        if (!live || !live.isAvailable) {
+          skipped.push(line.item.name);
+          continue;
+        }
+
+        const matchedOptions: CartItemOption[] = [];
+        let optionMissing = false;
+
+        for (const chosen of line.selectedOptions) {
+          const group = live.customizationGroups?.find(
+            (entry) => entry.id === chosen.groupId,
+          );
+          const match = group?.options.find(
+            (entry) =>
+              entry.name.trim().toLowerCase() ===
+              chosen.optionName.trim().toLowerCase(),
+          );
+
+          if (!group || !match) {
+            optionMissing = true;
+            break;
+          }
+
+          matchedOptions.push({
+            groupId: group.id,
+            groupTitle: group.title,
+            optionId: match.id,
+            optionName: match.name,
+            price: match.price,
+          });
+        }
+
+        const needsVariant = live.customizationGroups?.some(
+          (group) => group.id === 'variant' && group.required,
+        );
+        const hasVariant = matchedOptions.some(
+          (option) => option.groupId === 'variant',
+        );
+
+        if (optionMissing || (needsVariant && !hasVariant)) {
+          skipped.push(live.name);
+          continue;
+        }
+
+        if (!addToCart(live, line.quantity, matchedOptions)) {
+          setReorderNotice(
+            'Your cart has items from another hub. Resolve the hub prompt, then try again.',
+          );
+          return;
+        }
+
+        added += 1;
+      }
+
+      if (added === 0) {
+        setReorderNotice(
+          `Nothing from this order is available right now${
+            skipped.length ? `: ${skipped.join(', ')}` : ''
+          }.`,
+        );
+        return;
+      }
+
+      setReorderNotice(
+        `${added} item${added === 1 ? '' : 's'} added to your cart.${
+          skipped.length ? ` Unavailable and skipped: ${skipped.join(', ')}.` : ''
+        }`,
+      );
+      router.push('/checkout');
+    } catch (err: any) {
+      setReorderNotice(
+        err?.message || 'Could not rebuild this order from the live menu.',
+      );
+    } finally {
+      setReorderingId(null);
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    if (!activeOrder) return;
+
+    setReviewSubmitting(true);
+    setReviewError(null);
+
+    try {
+      const created = await api.reviews.create(
+        activeOrder.id,
+        reviewDraft.trim(),
+      );
+      setReview(created);
+      await loadHistory();
+    } catch (err: any) {
+      setReviewError(err?.message || 'Could not submit your review.');
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const historySection = (
+    <section className="rounded-3xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <History className="w-5 h-5 text-rose-500" />
+          <div>
+            <h2 className="text-lg font-black text-gray-900 dark:text-white">
+              Order history
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-slate-400">
+              Every order stored against your account.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadHistory()}
+          disabled={historyLoading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-200 text-[11px] font-bold disabled:opacity-50"
+        >
+          <RefreshCw
+            className={`w-3 h-3 ${historyLoading ? 'animate-spin' : ''}`}
+          />
+          Refresh
+        </button>
+      </div>
+
+      {reorderNotice && (
+        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-[11px] font-bold text-amber-800 dark:text-amber-300">
+          {reorderNotice}
+        </div>
+      )}
+
+      {historyError && (
+        <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-[11px] font-bold text-rose-700 dark:text-rose-300">
+          {historyError}
+        </div>
+      )}
+
+      {historyLoading && history.length === 0 && (
+        <div className="h-16 rounded-xl bg-gray-100 dark:bg-slate-800 animate-pulse" />
+      )}
+
+      {!historyLoading && !historyError && history.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-slate-400">
+          No orders yet. Your first order will appear here.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {history.map((order) => {
+          const itemCount = order.items.reduce(
+            (sum, item) => sum + item.quantity,
+            0,
+          );
+          const isActive = activeOrder?.id === order.id;
+
+          return (
+            <div
+              key={order.id}
+              className={`flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-2xl border ${
+                isActive
+                  ? 'border-rose-200 dark:border-rose-900 bg-rose-50/60 dark:bg-rose-950/20'
+                  : 'border-gray-200 dark:border-slate-800 bg-gray-50/60 dark:bg-slate-800/40'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onSelectOrder?.(order.id)}
+                className="flex-1 text-left min-w-0"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-black text-gray-900 dark:text-white">
+                    #{order.id.slice(0, 8)}
+                  </span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide text-rose-600 dark:text-rose-400">
+                    {order.status.replace(/_/g, ' ')}
+                  </span>
+                  {isActive && (
+                    <span className="text-[10px] font-bold text-gray-500 dark:text-slate-400">
+                      viewing
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-slate-400 mt-0.5">
+                  {new Date(order.createdAt).toLocaleString('en-IN', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  })}{' '}
+                  · {itemCount} item{itemCount === 1 ? '' : 's'} · ₹
+                  {order.finalPaidAmount.toFixed(0)}
+                </p>
+              </button>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void handleReorder(order)}
+                  disabled={reorderingId === order.id}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] font-extrabold"
+                >
+                  <RotateCcw
+                    className={`w-3 h-3 ${
+                      reorderingId === order.id ? 'animate-spin' : ''
+                    }`}
+                  />
+                  {reorderingId === order.id ? 'Adding…' : 'Reorder'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectOrder?.(order.id)}
+                  aria-label={`View order ${order.id.slice(0, 8)}`}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+
   if (!activeOrder) {
     return (
-      <div className="text-center py-20 space-y-4">
-        <Clock className="w-12 h-12 text-gray-400 mx-auto" />
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-          No active orders right now
-        </h2>
-        {loadError && <p className="text-xs font-bold text-rose-600">{loadError}</p>}
-        <button
-          onClick={onBackToHome}
-          className="px-6 py-2.5 rounded-xl bg-rose-600 text-white font-extrabold text-xs shadow-md hover:bg-rose-700 transition-colors"
-        >
-          Explore Menu
-        </button>
+      <div className="max-w-3xl mx-auto space-y-6 pb-20">
+        <div className="text-center py-10 space-y-3">
+          <Clock className="w-12 h-12 text-gray-400 mx-auto" />
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+            No live order right now
+          </h2>
+          <p className="text-xs text-gray-500 dark:text-slate-400">
+            Your past orders are below. Start a new one when you are ready.
+          </p>
+          {loadError && (
+            <p className="text-xs font-bold text-rose-600">{loadError}</p>
+          )}
+          <button
+            onClick={onBackToHome}
+            className="px-6 py-2.5 rounded-xl bg-rose-600 text-white font-extrabold text-xs shadow-md hover:bg-rose-700 transition-colors"
+          >
+            Explore Menu
+          </button>
+        </div>
+
+        {historySection}
       </div>
     );
   }
@@ -561,6 +908,73 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
           )
         )}
 
+        {/* Verified-purchase review. Text only: there is no star rating to
+            fake, and nothing becomes public until a human approves it. */}
+        {isDelivered && (
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+            <h3 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+              <MessageSquareQuote className="w-3.5 h-3.5" /> Your review
+            </h3>
+
+            {reviewLoading ? (
+              <div className="h-10 rounded-xl bg-white/5 animate-pulse" />
+            ) : review ? (
+              <>
+                <p className="text-xs text-slate-200 leading-6 whitespace-pre-wrap">
+                  {review.body}
+                </p>
+                <span
+                  className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wide ${
+                    review.status === 'APPROVED'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : review.status === 'REJECTED'
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : 'bg-amber-500/20 text-amber-300'
+                  }`}
+                >
+                  {review.status === 'APPROVED'
+                    ? 'Published'
+                    : review.status === 'REJECTED'
+                      ? 'Not published'
+                      : 'Awaiting moderation'}
+                </span>
+              </>
+            ) : (
+              <>
+                <p className="text-[11px] text-slate-400 leading-5">
+                  This order was delivered to you. Write what you thought of
+                  the food; your review appears under each brand after
+                  moderation.
+                </p>
+                <textarea
+                  value={reviewDraft}
+                  onChange={(event) => setReviewDraft(event.target.value)}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="At least 10 characters"
+                  className="w-full rounded-xl bg-slate-900/80 border border-white/15 text-xs text-white placeholder:text-slate-500 p-3 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+                {reviewError && (
+                  <p className="text-[11px] font-bold text-rose-300">
+                    {reviewError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleSubmitReview()}
+                  disabled={
+                    reviewSubmitting || reviewDraft.trim().length < 10
+                  }
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-extrabold"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {reviewSubmitting ? 'Submitting…' : 'Submit review'}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Real bill */}
         <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2 text-xs">
           <h3 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
@@ -622,6 +1036,8 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
           </div>
         </div>
       </div>
+
+      {historySection}
     </div>
   );
 };

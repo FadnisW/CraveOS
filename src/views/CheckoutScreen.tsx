@@ -5,6 +5,7 @@ import { useCart } from '../context/CartContext';
 import { useUser } from '../context/UserContext';
 import { SavedAddress, Order } from '../types';
 import { api } from '../lib/api-client';
+import { optionsPayload } from '../lib/pricing';
 import { mapApiOrder } from '../lib/order-mapper';
 import { loadRazorpay, openRazorpay } from '../lib/razorpay';
 import {
@@ -85,13 +86,29 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
   } | null>(null);
   const [addressResolving, setAddressResolving] = useState<boolean>(false);
   const [addressError, setAddressError] = useState<string | null>(null);
+  const [contactPhone, setContactPhone] = useState<string>('');
+
+  // The profile phone is the default delivery contact, but the customer can
+  // give a different number for this order. The server stores the number that
+  // was actually used, so a later profile change cannot rewrite history.
+  useEffect(() => {
+    setContactPhone((current) => current || user?.phone || '');
+  }, [user?.phone]);
+
+  const contactPhoneValid = /^(\+91)?[6-9]\d{9}$/.test(
+    contactPhone.replace(/[\s()-]/g, ''),
+  );
 
   const idempotencyKeyRef = useRef<string>(newIdempotencyKey());
   const attemptSignature = useMemo(
     () =>
       JSON.stringify({
         addressId: activeAddress?.id || null,
-        items: cartItems.map((ci) => [ci.item.id, ci.quantity]),
+        items: cartItems.map((ci) => [
+          ci.item.id,
+          ci.quantity,
+          optionsPayload(ci.selectedOptions),
+        ]),
         coupon: appliedCouponCode,
         paymentMethod,
       }),
@@ -198,6 +215,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
         items: cartItems.map((ci) => ({
           menuItemId: ci.item.id,
           quantity: ci.quantity,
+          options: optionsPayload(ci.selectedOptions),
         })),
         couponCode: appliedCouponCode || undefined,
         useWalletBalancePaise: requestedWalletPaise,
@@ -244,6 +262,7 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
     !!quote &&
     cartItems.length > 0 &&
     !couponInvalid &&
+    contactPhoneValid &&
     walletShortfall === 0;
 
   const applyCoupon = () => {
@@ -287,6 +306,13 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
       return;
     }
 
+    if (!contactPhoneValid) {
+      setCheckoutError(
+        'Enter the 10-digit mobile number the rider should call on delivery.',
+      );
+      return;
+    }
+
     if (couponInvalid) {
       setCheckoutError(
         quote.couponMessage ||
@@ -319,10 +345,12 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
           items: cartItems.map((ci) => ({
             menuItemId: ci.item.id,
             quantity: ci.quantity,
+            options: optionsPayload(ci.selectedOptions),
           })),
           couponCode: appliedCouponCode || undefined,
           useWalletBalancePaise,
           paymentMethod: effectivePaymentMethod,
+          contactPhone: contactPhone.trim(),
         },
         idempotencyKeyRef.current,
       );
@@ -496,6 +524,30 @@ export const CheckoutScreen: React.FC<CheckoutScreenProps> = ({
                 Served by {serverAddress.resolvedHubId}
               </p>
             )}
+
+            <div className="pt-3 border-t border-gray-100 dark:border-slate-700 space-y-1.5">
+              <label
+                htmlFor="checkout-contact-phone"
+                className="text-xs font-bold text-gray-700 dark:text-slate-300"
+              >
+                Delivery contact number
+              </label>
+              <input
+                id="checkout-contact-phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="10-digit mobile number"
+                value={contactPhone}
+                onChange={(event) => setContactPhone(event.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-xs text-gray-900 dark:text-white border border-transparent focus:border-rose-500 focus:outline-none"
+              />
+              <p className="text-[10px] text-gray-500 dark:text-slate-400">
+                {contactPhone && !contactPhoneValid
+                  ? 'Enter a valid 10-digit Indian mobile number.'
+                  : 'The rider will call this number on arrival. It is stored with this order.'}
+              </p>
+            </div>
 
             {!isAuthenticated && (
               <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">

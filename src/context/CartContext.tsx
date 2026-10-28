@@ -1,7 +1,8 @@
-'use client';
+﻿'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { CartItem, MenuItem, CartItemOption } from '../types';
+import { unitMrpFor } from '../lib/pricing';
 
 export interface HubConflictInfo {
   newItem: MenuItem;
@@ -29,7 +30,7 @@ interface CartContextType {
 
   /**
    * Item count and MRP only. Member pricing, coupons, delivery, packaging and
-   * taxes are all decided by the server quote at checkout — the cart must not
+   * taxes are all decided by the server quote at checkout â€” the cart must not
    * guess at them, because a guess the server disagrees with is a fake total.
    */
   mrpTotal: number;
@@ -40,12 +41,10 @@ interface CartContextType {
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 function optionsKey(selectedOptions: CartItemOption[]) {
-  return selectedOptions.map((option) => option.optionId).sort().join('-');
-}
-
-function unitPriceFor(item: MenuItem, selectedOptions: CartItemOption[]) {
-  const optionsExtraCost = selectedOptions.reduce((sum, option) => sum + option.price, 0);
-  return item.mrp + optionsExtraCost;
+  return selectedOptions
+    .map((option) => `${option.groupId}:${option.optionId}`)
+    .sort()
+    .join('-');
 }
 
 export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -59,7 +58,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [pendingConflict, setPendingConflict] = useState<HubConflictInfo | null>(null);
 
   const [cartItems, setCartItems] = useState<CartItem[]>(() => {
-    // Guard against SSR — localStorage is only available in the browser
+    // Guard against SSR â€” localStorage is only available in the browser
     if (typeof window === 'undefined') return [];
     const saved = localStorage.getItem('eatclub_cart');
     if (!saved) return [];
@@ -123,7 +122,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const key = optionsKey(selectedOptions);
     const cartItemId = `${item.id}-${key}`;
-    const unitPrice = unitPriceFor(item, selectedOptions);
+    const unitPrice = unitMrpFor(item, selectedOptions);
 
     setCartItems((prev) => {
       const existingIndex = prev.findIndex((ci) => ci.cartItemId === cartItemId);
@@ -159,7 +158,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (clearAndSwitch) {
       const { newItem, newItemQuantity, newItemOptions, newHubId } = pendingConflict;
-      const unitPrice = unitPriceFor(newItem, newItemOptions);
+      const unitPrice = unitMrpFor(newItem, newItemOptions);
 
       setPinnedHubId(newHubId);
       setCartItems([

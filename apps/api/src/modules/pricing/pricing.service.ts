@@ -17,9 +17,16 @@ const PACKAGING_FEE_PAISE = 2500;
 const FOOD_GST_RATE = 0.05;
 const DELIVERY_GST_RATE = 0.18;
 
+export interface QuoteOptionInput {
+  /** `variant` for a size, `addons` for an extra. */
+  groupId: string;
+  optionName: string;
+}
+
 export interface QuoteItemInput {
   menuItemId: string;
   quantity: number;
+  options?: QuoteOptionInput[];
 }
 
 export interface QuoteInput {
@@ -33,6 +40,18 @@ export interface QuoteInput {
   lockPromotion?: boolean;
 }
 
+interface CatalogueOption {
+  name: string;
+  priceInPaise: number;
+}
+
+interface ResolvedOption {
+  groupId: 'variant' | 'addons';
+  groupTitle: string;
+  name: string;
+  priceInPaise: number;
+}
+
 interface ResolvedLine {
   menuItemId: string;
   brandId: string;
@@ -40,6 +59,7 @@ interface ResolvedLine {
   mrpInPaise: number;
   memberPriceInPaise: number;
   quantity: number;
+  options: ResolvedOption[];
 }
 
 interface AppliedPromotion {
@@ -78,6 +98,7 @@ export interface QuoteResult {
     mrpInPaise: number;
     memberPriceInPaise: number;
     quantity: number;
+    options: ResolvedOption[];
     lineTotalPaise: number;
     memberLineTotalPaise: number;
   }[];
@@ -420,10 +441,44 @@ export class PricingService {
   }
 
   /**
+   * Reads a `variants`/`addOns` JSON column into a validated list.
+   *
+   * Catalogue rows are operator-edited data, so a malformed entry is skipped
+   * rather than crashing checkout. A skipped variant will then surface as
+   * "choose a valid size" instead of silently charging the base price.
+   */
+  private parseCatalogueOptions(value: Prisma.JsonValue | null): CatalogueOption[] {
+    if (!Array.isArray(value)) return [];
+
+    const options: CatalogueOption[] = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const name = String((entry as any).name || '').trim();
+      const priceInPaise = Number((entry as any).priceInPaise);
+      if (!name || !Number.isInteger(priceInPaise) || priceInPaise < 0) continue;
+      options.push({ name, priceInPaise });
+    }
+    return options;
+  }
+
+  private normaliseOptionName(value: string) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  /**
    * Resolves the cart to database rows served by the selected hub.
    *
    * A cart may contain the copy of an item owned by another kitchen of the same
    * brand. That logical item is resolved to the copy served by this hub.
+   *
+   * Variant pricing rule (agreed with the business):
+   *  - A selected size *replaces* the item's base price.
+   *  - The member price keeps the item's fixed rupee discount
+   *    (base MRP - base member price), floored at zero.
+   *  - Add-ons add their price to both the MRP and the member price.
+   *
+   * Lines are keyed by item + resolved options so two sizes of the same pizza
+   * remain two order lines with the correct price each.
    */
   private async resolveLines(
     db: Prisma.TransactionClient,
@@ -434,7 +489,15 @@ export class PricingService {
       throw new BadRequestException('Cart is empty');
     }
 
+    interface RequestedLine {
+      menuItemId: string;
+      quantity: number;
+      options: QuoteOptionInput[];
+    }
+
+    const requestedLines: RequestedLine[] = [];
     const requestedQty = new Map<string, number>();
+
     for (const item of items) {
       const menuItemId = String(item?.menuItemId || '').trim();
       if (!menuItemId) {
@@ -449,6 +512,39 @@ export class PricingService {
         throw new BadRequestException('Quantity per item cannot exceed 50');
       }
 
+      const rawOptions = Array.isArray(item.options) ? item.options : [];
+      const options: QuoteOptionInput[] = [];
+      const seenOptions = new Set<string>();
+
+      for (const option of rawOptions) {
+        const groupId = String(option?.groupId || '').trim();
+        const optionName = String(option?.optionName || '').trim();
+
+        if (!groupId || !optionName) {
+          throw new BadRequestException(
+            'Every selected option needs a groupId and optionName',
+          );
+        }
+        if (groupId !== 'variant' && groupId !== 'addons') {
+          throw new BadRequestException(
+            `Unknown option group '${groupId}'.`,
+          );
+        }
+        if (groupId === 'variant' && options.some((entry) => entry.groupId === 'variant')) {
+          throw new BadRequestException('Choose only one size per item');
+        }
+
+        const signature = `${groupId}:${this.normaliseOptionName(optionName)}`;
+        if (seenOptions.has(signature)) {
+          throw new BadRequestException(
+            `'${optionName}' was selected twice for the same item.`,
+          );
+        }
+        seenOptions.add(signature);
+        options.push({ groupId, optionName });
+      }
+
+      requestedLines.push({ menuItemId, quantity, options });
       requestedQty.set(
         menuItemId,
         (requestedQty.get(menuItemId) || 0) + quantity,
@@ -481,8 +577,12 @@ export class PricingService {
       hubCopies.map((item) => [item.menuItemGroupId as string, item]),
     );
 
-    return menuItemIds.map((menuItemId) => {
-      const requested = dbItems.find((item) => item.id === menuItemId);
+    const resolvedByKey = new Map<string, ResolvedLine>();
+
+    for (const requestedLine of requestedLines) {
+      const requested = dbItems.find(
+        (item) => item.id === requestedLine.menuItemId,
+      );
       if (!requested) {
         throw new BadRequestException(
           'A cart item is no longer on the menu. Please refresh your cart.',
@@ -507,19 +607,121 @@ export class PricingService {
         );
       }
 
-      return {
+      const variants = this.parseCatalogueOptions(dbItem.variants);
+      const addOns = this.parseCatalogueOptions(dbItem.addOns);
+      const variantInputs = requestedLine.options.filter(
+        (option) => option.groupId === 'variant',
+      );
+      const addOnInputs = requestedLine.options.filter(
+        (option) => option.groupId === 'addons',
+      );
+
+      if (variants.length > 0 && variantInputs.length === 0) {
+        throw new BadRequestException(
+          `Choose a size for '${dbItem.name}' before adding it to the cart.`,
+        );
+      }
+      if (variants.length === 0 && variantInputs.length > 0) {
+        throw new BadRequestException(
+          `'${dbItem.name}' does not have sizes to choose from.`,
+        );
+      }
+
+      let variant: CatalogueOption | undefined;
+      if (variantInputs.length > 0) {
+        const requestedName = this.normaliseOptionName(
+          variantInputs[0].optionName,
+        );
+        variant = variants.find(
+          (entry) => this.normaliseOptionName(entry.name) === requestedName,
+        );
+        if (!variant) {
+          throw new BadRequestException(
+            `'${variantInputs[0].optionName}' is not a valid size for '${dbItem.name}'.`,
+          );
+        }
+      }
+
+      const selectedAddOns: CatalogueOption[] = [];
+      for (const input of addOnInputs) {
+        const requestedName = this.normaliseOptionName(input.optionName);
+        const match = addOns.find(
+          (entry) => this.normaliseOptionName(entry.name) === requestedName,
+        );
+        if (!match) {
+          throw new BadRequestException(
+            `'${input.optionName}' is not an available extra for '${dbItem.name}'.`,
+          );
+        }
+        selectedAddOns.push(match);
+      }
+
+      // A size is the item's price, not a surcharge. Add-ons are surcharges.
+      const variantBaseMrp = variant?.priceInPaise ?? dbItem.mrpInPaise;
+      const baseMemberPrice = Math.min(
+        dbItem.memberPriceInPaise,
+        dbItem.mrpInPaise,
+      );
+      const fixedMemberDiscount = Math.max(
+        0,
+        dbItem.mrpInPaise - baseMemberPrice,
+      );
+      const addOnTotal = selectedAddOns.reduce(
+        (sum, entry) => sum + entry.priceInPaise,
+        0,
+      );
+      const mrpInPaise = variantBaseMrp + addOnTotal;
+      const memberPriceInPaise = Math.min(
+        mrpInPaise,
+        Math.max(0, variantBaseMrp - fixedMemberDiscount) + addOnTotal,
+      );
+
+      const options: ResolvedOption[] = [
+        ...(variant
+          ? [
+              {
+                groupId: 'variant' as const,
+                groupTitle: 'Size',
+                name: variant.name,
+                priceInPaise: variant.priceInPaise,
+              },
+            ]
+          : []),
+        ...selectedAddOns.map((entry) => ({
+          groupId: 'addons' as const,
+          groupTitle: 'Extra',
+          name: entry.name,
+          priceInPaise: entry.priceInPaise,
+        })),
+      ];
+
+      const lineKey = `${dbItem.id}::${options
+        .map(
+          (entry) =>
+            `${entry.groupId}:${this.normaliseOptionName(entry.name)}`,
+        )
+        .sort()
+        .join('|')}`;
+
+      const existing = resolvedByKey.get(lineKey);
+      if (existing) {
+        existing.quantity += requestedLine.quantity;
+        continue;
+      }
+
+      resolvedByKey.set(lineKey, {
         menuItemId: dbItem.id,
         brandId: dbItem.brandKitchen.brandId,
         name: dbItem.name,
-        mrpInPaise: dbItem.mrpInPaise,
+        mrpInPaise,
         // Defensive: a bad catalogue row must never make the member price exceed MRP.
-        memberPriceInPaise: Math.min(
-          dbItem.memberPriceInPaise,
-          dbItem.mrpInPaise,
-        ),
-        quantity: requestedQty.get(menuItemId)!,
-      };
-    });
+        memberPriceInPaise,
+        quantity: requestedLine.quantity,
+        options,
+      });
+    }
+
+    return [...resolvedByKey.values()];
   }
 
   private async evaluatePromotion(

@@ -10,6 +10,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RazorpayService } from '../../common/razorpay/razorpay.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export type MembershipPaymentMethod = 'WALLET' | 'RAZORPAY';
 
@@ -33,6 +34,7 @@ export class MembershipService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly razorpay: RazorpayService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -251,6 +253,16 @@ export class MembershipService {
       };
     });
 
+    // Only a genuinely new activation emails the customer. An idempotent
+    // replay returns the same purchase and must not send a second message.
+    if (!result.alreadyProcessed && result.membership) {
+      await this.sendMembershipActiveEmail(
+        userId,
+        plan.name,
+        result.membership.endsAt,
+      );
+    }
+
     return {
       purchaseId: result.purchase.id,
       status: result.purchase.status,
@@ -261,7 +273,6 @@ export class MembershipService {
       membership: result.membership,
     };
   }
-
   private async purchaseWithRazorpay(
     userId: string,
     plan: { id: string; name: string; durationDays: number; priceInPaise: number },
@@ -558,6 +569,14 @@ export class MembershipService {
       `Membership purchase ${purchase.id} settled via Razorpay (${gatewayOrderId})`,
     );
 
+    if (!result.alreadyProcessed && result.membership) {
+      await this.sendMembershipActiveEmail(
+        purchase.userId,
+        purchase.plan.name,
+        result.membership.endsAt,
+      );
+    }
+
     return {
       alreadyProcessed: result.alreadyProcessed,
       purchaseId: purchase.id,
@@ -594,6 +613,35 @@ export class MembershipService {
    * Renewals extend the current paid expiry. Buying during a trial starts the
    * paid plan immediately, which is the policy shown on the membership screen.
    */
+  /**
+   * A membership confirmation is informational. It is sent after the purchase
+   * has committed and never blocks or reverses the activation.
+   */
+  private async sendMembershipActiveEmail(
+    userId: string,
+    planName: string,
+    endsAt: Date,
+  ) {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!user?.email) return;
+
+      await this.notifications.sendMembershipActiveEmail(
+        user.email,
+        planName,
+        endsAt,
+        userId,
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Membership confirmation email failed for ${userId}: ${err?.message || 'unknown error'}`,
+      );
+    }
+  }
+
   private async activateMembership(
     tx: Prisma.TransactionClient,
     userId: string,

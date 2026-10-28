@@ -81,17 +81,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const { addToCart, cartItems } = useCart();
   const { user } = useUser();
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const hubId = activeAddress?.resolvedHubId || undefined;
 
+  // Only the brands and dishes the customer's hub can actually cook are shown.
+  // Without an address the catalogue is the whole live menu, and the banner
+  // below says so rather than pretending it is deliverable.
   const catalogue = useApi<Catalogue>(async () => {
     const [brandRows, itemRows] = await Promise.all([
-      api.getBrands(),
-      api.getMenuItems(),
+      api.getBrands(hubId),
+      api.getMenuItems(undefined, undefined, hubId),
     ]);
     return {
       brands: mapApiBrands(brandRows),
       items: mapApiMenuItems(itemRows),
     };
-  }, []);
+  }, [hubId]);
 
   const serviceability = useApi(
     () => api.resolveServiceability(activeAddress!.lat, activeAddress!.lng),

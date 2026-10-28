@@ -7,15 +7,17 @@ import { useUser } from '../context/UserContext';
 import { api } from '../lib/api-client';
 import { mapApiMenuItems } from '../lib/catalog-mapper';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/Feedback';
-import { Search, Plus, Check, ArrowLeft, UtensilsCrossed, SearchX } from 'lucide-react';
+import { Search, Plus, Check, ArrowLeft, MapPin, UtensilsCrossed, SearchX } from 'lucide-react';
 
 interface SearchScreenProps {
+  hubId?: string;
   onBack: () => void;
   onOpenItemModal: (item: MenuItem) => void;
   onSelectBrand: (brandId: BrandId) => void;
 }
 
 export const SearchScreen: React.FC<SearchScreenProps> = ({
+  hubId,
   onBack,
   onOpenItemModal,
   onSelectBrand,
@@ -46,7 +48,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
     const timer = setTimeout(async () => {
       try {
-        const rows = await api.searchItems(term);
+        const rows = await api.searchItems(term, hubId);
         if (cancelled) return;
         setResults(mapApiMenuItems(rows));
         setHasSearched(true);
@@ -63,7 +65,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, hubId]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -74,6 +76,17 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         <ArrowLeft className="w-4 h-4" />
         <span>Back to Home</span>
       </button>
+
+      {!hubId && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-start gap-3">
+          <MapPin className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-800 dark:text-amber-300 leading-5">
+            <span className="font-extrabold">Set your delivery address.</span> You
+            are searching the full live menu. With an address, results are limited
+            to what your hub can actually cook.
+          </p>
+        </div>
+      )}
 
       <div className="relative">
         <Search className="w-5 h-5 text-gray-400 absolute left-4 top-3.5" />

@@ -205,14 +205,22 @@ export class AddressesService {
       );
     }
 
-    // The resolved hub always wins over a client-supplied one.
+    // A pincode is part of a deliverable address, not decoration. Never invent
+    // one when the customer leaves the field blank.
+    const pincode = String(dto.pincode || '').trim();
+    if (!/^\d{6}$/.test(pincode)) {
+      throw new BadRequestException('Enter the 6-digit pincode for this address');
+    }
+
+    // The resolved hub always wins over a client-supplied one. The hub's city
+    // is authoritative; a client cannot label an HSR address as another city.
     return {
       type: type.toUpperCase() as 'HOME' | 'WORK' | 'OTHER',
       label: dto.label?.trim() || (type === 'home' ? 'Home' : type === 'work' ? 'Work' : 'Other'),
       addressLine: dto.addressLine.trim(),
       landmark: dto.landmark?.trim() || null,
-      city: dto.city?.trim() || serviceability.city || 'Bengaluru',
-      pincode: dto.pincode?.trim() || '560001',
+      city: serviceability.city,
+      pincode,
       lat,
       lng,
       resolvedHubId: serviceability.hubId,

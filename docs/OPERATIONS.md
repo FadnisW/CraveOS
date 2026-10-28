@@ -130,6 +130,19 @@ deletion anonymises the profile, blocks the old session and is idempotent:
 npm run check:legal-smoke
 ```
 
+`check:phase5-smoke` is the customer-product check. It proves hub-scoped
+catalog and search, variant/add-on pricing, the order option and delivery-contact
+snapshots, profile editing, threaded support tickets with assignment and
+resolution, verified-purchase reviews with approval and rejection, lifecycle
+notification rows, and that the real customer routes render:
+
+```bash
+npm run check:phase5-smoke
+```
+
+It needs the same services as `check:legal-smoke`, plus
+`support.admin@eatclub.in` for ticket assignment and resolution.
+
 ## 2. Database migrations
 
 `prisma/migrations/0_init` is the baseline. It was generated from the schema
@@ -352,6 +365,13 @@ automatic down migration.
 - [ ] A referral code is applied at signup and both wallets are credited only
       after the referee's first delivered order.
 - [ ] Every advertised coupon is an `APPROVED` `Promotion` inside its window.
+- [ ] `npm run check:phase5-smoke` passes: hub-scoped catalog, variant pricing,
+      order option snapshots, profile edit, support threading, review moderation
+      and lifecycle notification rows.
+- [ ] A pending review is not public, an approved review is public under every
+      brand in its order, and a rejected review stays hidden.
+- [ ] `notification_logs` has no duplicate `SENT` row for any order+kind, and a
+      missing `RESEND_API_KEY` records `SKIPPED`, not `SENT`.
 - [ ] The previous build artifact is available for rollback.
 
 ## 7. Secret rotation
@@ -573,3 +593,123 @@ Re-run the reconciliation query afterwards; it must return zero rows. The
 development seed now writes an opening ledger row for a newly created demo
 customer and no longer resets an existing demo wallet on re-seed, so a fresh
 database does not need this repair.
+
+## 10. Customer product operations
+
+### Real routes
+
+The storefront is no longer a single page that swaps local state. Every screen
+has a URL, a refresh keeps the customer in place, and the back button works:
+
+| Surface | Route |
+| --- | --- |
+| Home | `/` |
+| Menu | `/menu` |
+| Search | `/search` |
+| Brand restaurant page | `/restaurants/[slug]` |
+| Checkout | `/checkout` |
+| Order history | `/orders` |
+| Account and profile | `/account` |
+| Address book and map pin | `/account/addresses` |
+| Support list | `/support` |
+| Support thread | `/support/[id]` |
+| Staff console | `/ops`, `/ops/platform`, `/ops/users`, `/ops/orders`, `/ops/riders`, `/ops/tickets`, `/ops/finance`, `/ops/promotions`, `/ops/audit`, `/ops/kds`, `/ops/dispatch`, `/ops/hub`, `/ops/brand`, `/ops/rider` |
+
+Staff routes are role-guarded. A customer who opens `/ops` is redirected to the
+storefront rather than shown an empty console.
+
+### Hub-scoped catalog
+
+`GET /catalog/brands`, `GET /catalog/brands/:slug`, `GET /catalog/items` and
+`GET /catalog/search` accept an optional `hubId`. When it is present, only rows
+whose `BrandKitchen.hubId` matches are returned. Each hub has its own
+`MenuItem` rows, so the same dish can have a different id, price or availability
+at another hub. The storefront passes the active address's `resolvedHubId`; a
+missing address shows an honest "set a delivery address" state instead of
+falling back to another hub.
+
+`GET /catalog/hubs` is public and returns `id`, `name`, `city`, `lat` and `lng`
+for every hub. It is used only to centre the address map.
+
+### Address pin rules
+
+1. A new address starts at the active address, or at the first real hub returned
+   by `GET /catalog/hubs`. The map explains that this is a starting point.
+2. The customer must move the map pin (`pinConfirmed`) before the address can be
+   saved. A hub coordinate is never saved as a door.
+3. The pincode is required and must be six digits. The city is taken from the
+   hub that resolves the pin, not typed by the customer.
+4. `POST /catalog/serviceability/resolve` uses the hub's GeoJSON polygon. The
+   old 8 km radius fallback was removed; a pin outside every polygon is refused.
+
+### Variant and add-on pricing
+
+The server, not the browser, prices every choice:
+
+- A selected `variant` replaces the item's base price.
+- The member price for a variant is the variant price minus the item's fixed
+  rupee discount (`base MRP - base member price`), floored at zero.
+- An `addons` selection adds its price to both MRP and member price.
+- An item with variants requires exactly one variant. Unknown options,
+  duplicate groups and client-supplied prices are rejected with `400`.
+- The chosen options are stored in `OrderItem.optionsSnapshot`; the order's
+  `mrpTotalPaise` and `memberSavingsPaise` use the option-adjusted amounts.
+
+### Support threads
+
+`POST /tickets` requires a category and an initial message. The initial message
+is written to `TicketMessage` in the same transaction as the ticket. The raiser
+and support share one ordered thread through `POST /tickets/:id/messages`;
+another customer receives `403` on both read and write. A ticket is assigned to
+a support/operations/super admin before it can be resolved, and resolution stores
+the note and timestamp. A `RESOLVED` or `CLOSED` ticket refuses new messages.
+
+### Verified-purchase reviews
+
+- There is no rating column and no star average. The storefront shows text only.
+- A review requires a `DELIVERED` order owned by the caller. One review per
+  order, enforced by the unique `orderId`.
+- A new review starts `PENDING`. Only `APPROVED` text appears in
+  `GET /reviews/brands/:slug`; the public author is always "Verified customer".
+- Moderation is one-way: `PENDING -> APPROVED` or `PENDING -> REJECTED`. A
+  second moderation attempt returns `409`. Each decision writes
+  `REVIEW_APPROVED` or `REVIEW_REJECTED` to `AuditLog`.
+- The moderation queue is `GET /reviews/moderation?status=PENDING`, restricted
+  to support, operations and super admins. The ops-console screen is Phase 6;
+  until then, moderation is performed through the API.
+
+### Lifecycle notifications
+
+Resend is the only email channel. Every lifecycle attempt writes one
+`NotificationLog` row:
+
+| Kind | Trigger |
+| --- | --- |
+| `ORDER_PLACED` | The order transaction has committed and kitchen jobs are queued. |
+| `ORDER_ACCEPTED` | The first time every kitchen ticket is accepted and the parent order moves from `PLACED` to `PREPARING`. |
+| `OUT_FOR_DELIVERY` | The hub handoff desk or the rider pickup marks the order out for delivery. |
+| `DELIVERED` | Delivery OTP verification succeeds. |
+| `CANCELLED` | A real cancellation, never an idempotent replay. |
+| `MEMBERSHIP` | A new paid activation, never an idempotent purchase replay. |
+
+`NotificationLog.status` is `SENT`, `FAILED` or `SKIPPED`. A missing
+`RESEND_API_KEY` records `SKIPPED`, never `SENT`. A mail failure is logged and
+never rolls back an order, a payment or a delivery. The `orderId + kind` pair is
+edge-triggered: a previously `SENT` row suppresses a duplicate, and the smoke
+test fails if any pair has more than one `SENT` row.
+
+### Pre-release customer checks
+
+- [ ] `npm run check:phase5-smoke` passes with zero failures.
+- [ ] A HSR address and an Indiranagar address show different menu rows for the
+      same dish, and neither leaks the other hub's row.
+- [ ] A 12" variant plus an add-on quotes and charges the option-adjusted total;
+      an item with variants cannot be ordered without a choice.
+- [ ] A new address cannot be saved until the pin is moved, and a bad pincode is
+      refused.
+- [ ] A customer can open a ticket, reply, see the support reply and the
+      resolution note; another customer gets `403`.
+- [ ] A delivered order accepts exactly one review; pending and rejected reviews
+      stay out of the public list; an approved review appears under each brand
+      in that order.
+- [ ] `notification_logs` has no duplicate `SENT` row for any order+kind.

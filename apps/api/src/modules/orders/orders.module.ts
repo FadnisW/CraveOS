@@ -6,9 +6,17 @@ import { QueueModule } from '../queue/queue.module';
 import { LogisticsModule } from '../logistics/logistics.module';
 import { WebsocketsModule } from '../websockets/websockets.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [PricingModule, QueueModule, LogisticsModule, WebsocketsModule, PaymentsModule],
+  imports: [
+    PricingModule,
+    QueueModule,
+    LogisticsModule,
+    WebsocketsModule,
+    PaymentsModule,
+    NotificationsModule,
+  ],
   controllers: [OrdersController],
   providers: [OrdersService],
   exports: [OrdersService],
