@@ -488,20 +488,132 @@ export class AdminService {
   }
 
   /**
-   * User Management: DPDP Compliance Right-to-Erasure (Anonymize user record)
+   * User Management: DPDP right-to-erasure.
+   *
+   * Erasure is not a single `DELETE`: orders, payments and tax records must be
+   * retained, and a wallet balance or a live order cannot be silently
+   * discarded. This anonymises the person, removes profile data that is not
+   * part of a financial record, cancels pending referral money and revokes
+   * every existing session by blocking the account. The caller must resolve a
+   * wallet balance or a live order first.
    */
-  async deleteUserData(id: string) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException(`User ${id} not found`);
+  async deleteUserData(id: string, actorId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      // Serialise deletion with wallet movements and order creation.
+      await tx.$executeRaw`SELECT "id" FROM "users" WHERE "id" = ${id} FOR UPDATE`;
 
-    return this.prisma.user.update({
-      where: { id },
-      data: {
-        name: 'Deleted User',
-        email: `anonymized_${Date.now()}@eatclub.invalid`,
-        phone: null,
-        walletBalance: 0,
-      },
+      const user = await tx.user.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          walletBalance: true,
+          isBlocked: true,
+        },
+      });
+      if (!user) throw new NotFoundException(`User ${id} not found`);
+
+      if (actorId === id) {
+        throw new ConflictException(
+          'You cannot delete the account you are signed in with.',
+        );
+      }
+
+      // A repeated request is a no-op rather than a second audit entry.
+      if (user.email?.endsWith('@eatclub.invalid')) {
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          isBlocked: user.isBlocked,
+          anonymized: true,
+          alreadyAnonymized: true,
+        };
+      }
+
+      if (user.walletBalance !== 0) {
+        throw new ConflictException(
+          `This account still holds ₹${(user.walletBalance / 100).toFixed(2)} in wallet credit. ` +
+            'The customer must spend it, or support must resolve it, before the account can be deleted.',
+        );
+      }
+
+      const liveOrders = await tx.order.count({
+        where: {
+          userId: id,
+          status: { notIn: ['DELIVERED', 'CANCELLED'] },
+        },
+      });
+      if (liveOrders > 0) {
+        throw new ConflictException(
+          `This account has ${liveOrders} live order(s). Resolve or cancel them before deleting the account.`,
+        );
+      }
+
+      // Pending referrals would otherwise pay an anonymised, blocked account
+      // later. Rewarded referrals stay as financial history.
+      const pendingReferrals = await tx.referral.updateMany({
+        where: {
+          status: 'PENDING',
+          OR: [{ referrerId: id }, { refereeId: id }],
+        },
+        data: { status: 'CANCELLED' },
+      });
+
+      // Cart and cart items are live profile data, not a record of anything
+      // that happened.
+      await tx.cart.deleteMany({ where: { userId: id } });
+
+      // Saved addresses that were never used on an order can go. An address
+      // attached to an order stays with that order record, which finance and
+      // tax must retain.
+      const addresses = await tx.address.deleteMany({
+        where: { userId: id, orders: { none: {} } },
+      });
+
+      // The current membership is account state. Membership purchases remain
+      // as financial records.
+      await tx.membership.deleteMany({ where: { userId: id } });
+
+      const anonymized = await tx.user.update({
+        where: { id },
+        data: {
+          name: 'Deleted User',
+          email: `deleted_${id}@eatclub.invalid`,
+          phone: null,
+          referredById: null,
+          // Blocking revokes every existing HTTP and WebSocket session: the
+          // guard re-reads this flag on each request.
+          isBlocked: true,
+        },
+        select: { id: true, name: true, email: true, isBlocked: true },
+      });
+
+      const retainedOrders = await tx.order.count({ where: { userId: id } });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'USER_ANONYMIZED',
+          actorId,
+          recordId: id,
+          diff: {
+            addressesDeleted: addresses.count,
+            pendingReferralsCancelled: pendingReferrals.count,
+            retainedOrderRecords: retainedOrders,
+            walletBalancePaiseAtDeletion: 0,
+          },
+        },
+      });
+
+      return {
+        ...anonymized,
+        anonymized: true,
+        alreadyAnonymized: false,
+        addressesDeleted: addresses.count,
+        pendingReferralsCancelled: pendingReferrals.count,
+        retainedOrderRecords: retainedOrders,
+      };
     });
   }
 

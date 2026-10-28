@@ -85,6 +85,9 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);
+  const [cancelling, setCancelling] = useState<boolean>(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
 
   // Keep the delivery countdown honest while the page stays open.
@@ -205,6 +208,25 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   const isCancelled = activeOrder?.status === 'CANCELLED';
   const isDelivered = activeOrder?.status === 'DELIVERED';
 
+  // The server refuses cancellation once any kitchen ticket is accepted or a
+  // rider is assigned. The button mirrors that rule instead of offering an
+  // action the API will reject.
+  const kitchenStarted =
+    activeOrder?.brandStatuses.some((ticket) =>
+      ['ACCEPTED', 'PREPARING', 'READY'].includes(ticket.status),
+    ) ?? false;
+  const canCancel =
+    !!activeOrder &&
+    !isCancelled &&
+    !isDelivered &&
+    !kitchenStarted &&
+    !activeOrder.rider;
+
+  const totalPaid = activeOrder
+    ? activeOrder.finalPaidAmount + activeOrder.walletDiscount
+    : 0;
+  const isPaid = activeOrder?.paymentStatus === 'SUCCESS';
+
   // The server stores a per-order estimate at checkout. Show the time that is
   // actually left, not the original estimate forever. If the server did not
   // produce an estimate, say so instead of inventing one.
@@ -226,6 +248,23 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
     setRefreshing(true);
     await refreshOrder(activeOrder.id);
     setRefreshing(false);
+  };
+
+  const handleCancelOrder = async () => {
+    if (!activeOrder) return;
+
+    setCancelling(true);
+    setCancelError(null);
+
+    try {
+      await api.cancelOrder(activeOrder.id, 'Cancelled by customer');
+      await refreshOrder(activeOrder.id);
+      setShowCancelConfirm(false);
+    } catch (err: any) {
+      setCancelError(err?.message || 'Could not cancel this order.');
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (!activeOrder) {
@@ -341,7 +380,12 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
             <div>
               <h3 className="text-sm font-extrabold text-rose-300">This order was cancelled</h3>
               <p className="text-[11px] text-rose-200/80">
-                Any money actually collected is refunded to your wallet by the server.
+                Paid amounts are returned by the server: wallet credit
+                immediately, card and UPI payments to the original method in
+                5–7 working days.{' '}
+                <a href="/legal/refunds" className="underline font-bold">
+                  Refund policy
+                </a>
               </p>
             </div>
           </div>
@@ -404,6 +448,72 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
             </div>
           )}
         </div>
+
+        {/* Cancellation closes when the kitchen starts. The card disappears
+            once the server would refuse the request. */}
+        {canCancel && (
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+            {!showCancelConfirm ? (
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-200">Need to cancel?</h3>
+                  <p className="text-[11px] text-slate-400 leading-5">
+                    You can cancel until the kitchen accepts the order. Once
+                    preparation starts, cancellation closes.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCancelConfirm(true);
+                    setCancelError(null);
+                  }}
+                  className="shrink-0 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold transition-colors"
+                >
+                  Cancel order
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <h3 className="text-sm font-extrabold text-white">Cancel this order?</h3>
+                <p className="text-[11px] text-slate-300 leading-6">
+                  {!isPaid && activeOrder.walletDiscount > 0
+                    ? `Your wallet credit of ₹${activeOrder.walletDiscount.toFixed(0)} returns immediately. No card or UPI payment has been collected.`
+                    : !isPaid || totalPaid === 0
+                      ? 'No payment has been collected for this order. Cancelling closes it immediately.'
+                      : activeOrder.paymentMethod === 'WALLET'
+                        ? `₹${totalPaid.toFixed(0)} will be credited back to your wallet immediately.`
+                        : activeOrder.walletDiscount > 0
+                          ? `Your wallet credit of ₹${activeOrder.walletDiscount.toFixed(0)} returns immediately. The remaining ₹${activeOrder.finalPaidAmount.toFixed(0)} returns to your card or UPI in 5–7 working days.`
+                          : `₹${totalPaid.toFixed(0)} will be refunded to your original payment method in 5–7 working days.`}
+                </p>
+                {cancelError && (
+                  <p className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] font-bold text-rose-300">
+                    {cancelError}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCancelOrder}
+                    disabled={cancelling}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-extrabold transition-colors"
+                  >
+                    {cancelling ? 'Cancelling…' : 'Yes, cancel order'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelConfirm(false)}
+                    disabled={cancelling}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 disabled:opacity-50 text-slate-200 text-xs font-extrabold transition-colors"
+                  >
+                    Keep order
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Delivery handover code — shown to the customer only, once the rider
             has collected the order. The rider types this in at the door. */}

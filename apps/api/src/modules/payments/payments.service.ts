@@ -485,6 +485,134 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * Refund everything the customer actually paid for an order.
+   *
+   * `refundOrder` handles one instrument at a time. A mixed checkout can pay
+   * part from the wallet and part through the gateway, so a full cancellation
+   * must return both: the gateway portion through Razorpay and the wallet
+   * portion to the wallet ledger. The payment row is marked REFUNDED only after
+   * every component has been returned.
+   */
+  async refundOrderInFull(orderId: string, reason: string, actorId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { orderId },
+      include: {
+        order: {
+          select: {
+            id: true,
+            userId: true,
+            walletAppliedPaise: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!payment || payment.status !== 'SUCCESS') {
+      throw new BadRequestException('This order has no successful payment to refund');
+    }
+
+    // A retry after a partially-committed refund must finish the missing
+    // component instead of failing because the first instrument is already
+    // fully returned. Gateway refunds track `refundedAmountPaise`; wallet
+    // refunds are tracked by the wallet ledger.
+    let alreadyRefundedPaise = payment.refundedAmountPaise;
+    if (payment.gateway === 'wallet') {
+      const walletRefunds = await this.prisma.walletTransaction.aggregate({
+        where: {
+          orderId,
+          reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
+        },
+        _sum: { amountInPaise: true },
+      });
+      alreadyRefundedPaise = walletRefunds._sum.amountInPaise ?? 0;
+    }
+
+    const remainingInstrumentPaise = Math.max(
+      0,
+      payment.amountInPaise - alreadyRefundedPaise,
+    );
+
+    const instrumentRefund =
+      remainingInstrumentPaise > 0
+        ? await this.refundOrder(orderId, undefined, reason, actorId)
+        : {
+            orderId,
+            refundPaise: 0,
+            gateway: payment.gateway === 'wallet' ? 'wallet' : 'razorpay',
+            refundId: payment.refundId ?? null,
+          };
+
+    let walletRefundPaise = 0;
+
+    // For a gateway payment, `refundOrder` only returns the gateway charge. The
+    // wallet portion was debited separately when the payment was verified.
+    if (payment.gateway !== 'wallet' && payment.order.walletAppliedPaise > 0) {
+      const walletSpend = await this.prisma.walletTransaction.findFirst({
+        where: { orderId, reason: 'ORDER_SPEND' },
+        select: { amountInPaise: true },
+      });
+
+      if (walletSpend) {
+        const refunds = await this.prisma.walletTransaction.aggregate({
+          where: {
+            orderId,
+            reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
+          },
+          _sum: { amountInPaise: true },
+        });
+
+        const spentPaise = Math.abs(walletSpend.amountInPaise);
+        const alreadyRefundedPaise = refunds._sum.amountInPaise ?? 0;
+        const refundablePaise = Math.max(0, spentPaise - alreadyRefundedPaise);
+
+        if (refundablePaise > 0) {
+          await this.prisma.$transaction(async (tx) => {
+            await tx.user.update({
+              where: { id: payment.order.userId },
+              data: { walletBalance: { increment: refundablePaise } },
+            });
+            await tx.walletTransaction.create({
+              data: {
+                userId: payment.order.userId,
+                amountInPaise: refundablePaise,
+                reason: 'ORDER_REFUND',
+                orderId,
+              },
+            });
+            await tx.auditLog.create({
+              data: {
+                action: 'WALLET_REFUND',
+                actorId,
+                recordId: orderId,
+                diff: {
+                  refundPaise: refundablePaise,
+                  reason,
+                  gateway: 'wallet',
+                  component: 'wallet_portion_of_gateway_order',
+                },
+              },
+            });
+          });
+
+          walletRefundPaise = refundablePaise;
+        }
+      }
+    }
+
+    await this.prisma.payment.update({
+      where: { orderId },
+      data: { status: 'REFUNDED', refundedAt: new Date() },
+    });
+
+    return {
+      ...instrumentRefund,
+      walletRefundPaise,
+      totalRefundPaise: instrumentRefund.refundPaise + walletRefundPaise,
+    };
+  }
+
   async getWalletBalance(userId: string, actor: AuthenticatedActor) {
     if (actor?.role !== 'ADMIN' && actor?.sub !== userId) {
       throw new ForbiddenException('You can only view your own wallet');

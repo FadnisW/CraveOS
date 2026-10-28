@@ -152,8 +152,8 @@ export class AdminController {
   @Delete('users/:id')
   @Roles('ADMIN')
   @AdminSubRoles('SUPER_ADMIN')
-  async deleteUserData(@Param('id') id: string) {
-    return this.adminService.deleteUserData(id);
+  async deleteUserData(@Request() req: any, @Param('id') id: string) {
+    return this.adminService.deleteUserData(id, req.user?.sub || 'system');
   }
 
   /**

@@ -42,7 +42,8 @@ export class OrdersController {
   }
 
   /**
-   * Cancels an unpaid order (e.g. the customer dismissed the Razorpay modal).
+   * Cancels an order before the kitchen accepts it. Paid orders are refunded
+   * in full; unpaid attempts are simply closed.
    */
   @Post(':id/cancel')
   @Roles('CUSTOMER', 'ADMIN')
@@ -51,7 +52,7 @@ export class OrdersController {
     @Param('id') id: string,
     @Body('reason') reason?: string,
   ) {
-    return this.ordersService.cancelUnpaidOrder(id, req.user as AuthenticatedActor, reason);
+    return this.ordersService.cancelOrder(id, req.user as AuthenticatedActor, reason);
   }
 
   @Patch('brand-tickets/:ticketId/status')

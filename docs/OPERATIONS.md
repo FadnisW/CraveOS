@@ -87,6 +87,7 @@ Two production settings matter for the BFF:
 
 ```bash
 npm run check:no-fakes
+npm run check:legal
 npm run typecheck
 npm run typecheck:api
 npm run build
@@ -108,6 +109,26 @@ npm run check:auth-smoke
 `check:prod-guard` proves the production guard rejects an example secret, a
 localhost origin and `DEV_OTP_BYPASS=true`. `check:api-health` starts the built
 API on port 4177 and requires both dependency checks to report `up`.
+
+`check:legal` is the advisory legal-identity check. It lists every missing,
+placeholder or malformed legal value and fails on a policy-version mismatch
+between the web app and the API. `check:legal:release` is the blocking form used
+by the release workflow; `build:release` and `start:release` run it first. See
+`docs/LEGAL.md` for the field list and the version-bump process.
+
+`check:legal-smoke` is a manual pre-release check that needs the Next server on
+port 3000, the API on port 4000, PostgreSQL, Redis and the
+`craveos-postgres` container. It proves the legal pages render, signup without
+consent is refused, consent is persisted with the policy version, a paid wallet
+order refunds exactly once on cancellation, a second cancel is a no-op,
+cancellation after kitchen acceptance is refused, a kitchen rejection closes the
+order and its delivery trip, account deletion is refused while wallet credit
+remains, an operations admin cannot delete an account, and a super-admin
+deletion anonymises the profile, blocks the old session and is idempotent:
+
+```bash
+npm run check:legal-smoke
+```
 
 ## 2. Database migrations
 
@@ -314,6 +335,15 @@ automatic down migration.
 - [ ] `NEXT_PUBLIC_APP_URL` contains only real HTTPS origins.
 - [ ] Razorpay is in live mode and the webhook secret is configured.
 - [ ] `RESEND_FROM_EMAIL` uses a verified sending domain.
+- [ ] `npm run check:legal:release` exits 0 and every legal identity value is
+      real and verified. Placeholders are a release blocker.
+- [ ] Counsel has reviewed the Terms, Privacy, Refund, Delivery and Contact
+      pages against the shipped product.
+- [ ] A test signup without the consent checkbox is refused, and a real signup
+      stores `termsAcceptedAt`, `termsVersion`, `privacyAcceptedAt` and
+      `privacyVersion`.
+- [ ] A paid wallet order cancels and refunds exactly once; a second cancel does
+      not move money, and cancellation after kitchen acceptance is refused.
 - [ ] `/api/v1/health` returns `200` with both checks `up`.
 - [ ] One real low-value order completes: quote, payment, kitchen ticket,
       dispatch, delivery OTP.
@@ -412,6 +442,65 @@ stale quote cannot change what is charged.
   Brand ops can only submit `PENDING_APPROVAL` proposals.
 - Do not advertise a coupon in copy, banners or notifications unless the row is
   approved and in its window.
+
+### Order cancellation and refunds
+
+`POST /orders/:id/cancel` is the only customer cancellation path. It locks the
+order row, then:
+
+1. returns the already-cancelled order if the order is `CANCELLED` (a second tap
+   must not refund twice);
+2. refuses with `409` once any kitchen ticket is `ACCEPTED`, `PREPARING` or
+   `READY`, or a rider is assigned;
+3. refunds a paid order in full — wallet credit immediately, gateway money
+   through Razorpay to the original instrument, both components for a mixed
+   payment;
+4. closes every open kitchen ticket as `REJECTED`, cancels the delivery trip,
+   marks an unpaid payment `FAILED`, releases the coupon redemption, writes an
+   audit row and emits the `CANCELLED` socket event.
+
+A paid order keeps its collected amounts on the row so the refund ledgers can
+net them to zero. Do not "repair" a cancelled order by zeroing
+`walletAppliedPaise` or `finalPaidPaise`; that hides the refund.
+
+A full kitchen rejection also refunds the order and cancels its delivery trip,
+so a rider assigned before the rejection is not left attached to a dead order.
+
+Gateway refunds need `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` and a stored
+`gatewayPaymentId`. If Razorpay rejects the refund, the cancellation fails and
+the order stays live; retry after the gateway is healthy. The smoke test covers
+the wallet path without gateway keys. Test one real low-value gateway refund in
+Razorpay test mode before launch.
+
+### Account deletion and data requests
+
+`DELETE /admin/users/:id` is the only account-deletion path. It requires a
+super admin and records the acting admin in a `USER_ANONYMIZED` audit row. It
+is deliberately not a single SQL delete:
+
+1. It refuses with `409` while the account holds wallet credit. Support must
+   help the customer spend the balance or resolve it through the ledger first.
+   Never zero `walletBalance` directly; that destroys money without a ledger
+   entry.
+2. It refuses with `409` while the account has an order that is not `DELIVERED`
+   or `CANCELLED`. Deliver, cancel or refund the live order first.
+3. It refuses to let an admin delete the account they are signed in with.
+4. On success it cancels pending referrals, deletes the cart, deletes saved
+   addresses that were never attached to an order, deletes the current
+   membership, anonymises name, email and phone, clears the referrer link,
+   blocks the account (which revokes existing HTTP and WebSocket sessions) and
+   writes the audit row.
+
+Orders, payments, refunds, wallet ledger rows, membership purchases, rewarded
+referrals and the delivery address attached to an order are retained for eight
+years for GST, accounting and dispute purposes. A second request for an already
+anonymised account returns `alreadyAnonymized: true` without a second audit
+entry.
+
+The customer-facing promise is deletion or anonymisation within 30 days of a
+verified request. Record the request date, how the requester proved control of
+the account, any wallet/live-order blocker, and the completion date in the
+support ticket.
 
 ### Ledger reconciliation
 

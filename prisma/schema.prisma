@@ -135,6 +135,12 @@ model User {
   referredUsers        User[]                @relation("UserReferrals")
   referralsMade        Referral[]            @relation("ReferralsMade")
   referralReceived     Referral?             @relation("ReferralReceived")
+  // Explicit, auditable consent. A new account cannot be created until the
+  // signup checkbox is ticked; the version records which policy text was shown.
+  termsAcceptedAt      DateTime?
+  termsVersion         String?
+  privacyAcceptedAt    DateTime?
+  privacyVersion       String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 

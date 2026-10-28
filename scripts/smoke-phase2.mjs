@@ -90,7 +90,12 @@ function step(title) {
 
 async function signIn(email, referralCode) {
   const res = await api('POST', '/auth/verify-otp', {
-    body: { email, code: '123456', ...(referralCode ? { referralCode } : {}) },
+    body: {
+      email,
+      code: '123456',
+      acceptedLegal: true,
+      ...(referralCode ? { referralCode } : {}),
+    },
   });
   if (res.status >= 300) {
     throw new Error(`sign-in failed for ${email}: ${JSON.stringify(res.json)}`);

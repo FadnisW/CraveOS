@@ -55,13 +55,19 @@ export const api = {
       body: JSON.stringify({ email }),
     }),
 
-  verifyOtp: (email: string, code: string, referralCode?: string) =>
+  verifyOtp: (
+    email: string,
+    code: string,
+    referralCode?: string,
+    acceptedLegal?: boolean,
+  ) =>
     apiRequest('/auth/verify-otp', {
       method: 'POST',
       body: JSON.stringify({
         email,
         code,
         referralCode: referralCode?.trim() || undefined,
+        acceptedLegal: acceptedLegal === true,
       }),
     }),
 

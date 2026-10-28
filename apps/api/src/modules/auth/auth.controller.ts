@@ -43,8 +43,9 @@ export class AuthController {
     @Body('email') email: string,
     @Body('code') code: string,
     @Body('referralCode') referralCode?: string,
+    @Body('acceptedLegal') acceptedLegal?: boolean,
   ) {
-    return this.authService.verifyOtp(email, code, referralCode);
+    return this.authService.verifyOtp(email, code, referralCode, acceptedLegal);
   }
 
   /**

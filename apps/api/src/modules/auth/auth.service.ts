@@ -29,6 +29,13 @@ const OTP_MAX_FAILURES = 5;
 const WS_TICKET_TTL_SECONDS = 60;
 const TRIAL_DAYS = 30;
 
+/**
+ * The policy text a customer is agreeing to. Bump this whenever Terms or
+ * Privacy change materially; the accepted version is stored per account so
+ * support can prove which text was shown.
+ */
+export const LEGAL_POLICY_VERSION = '2026-10-27';
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 @Injectable()
@@ -175,7 +182,12 @@ export class AuthService {
     };
   }
 
-  async verifyOtp(email: string, code: string, referralCode?: string) {
+  async verifyOtp(
+    email: string,
+    code: string,
+    referralCode?: string,
+    acceptedLegal?: boolean,
+  ) {
     const cleanEmail = this.normaliseEmail(email);
     const cleanCode = String(code || '').trim();
 
@@ -198,7 +210,7 @@ export class AuthService {
     if (this.isDevOtpBypassEnabled() && cleanCode === '123456') {
       await this.redis.del(failureKey);
       this.logger.log(`🔓 Dev bypass used for ${cleanEmail}`);
-      return this.upsertUserAndSign(cleanEmail, referralCode);
+      return this.upsertUserAndSign(cleanEmail, referralCode, acceptedLegal);
     }
 
     // Fetch OTP from Redis
@@ -221,7 +233,7 @@ export class AuthService {
     await this.redis.del(failureKey);
     this.logger.log(`✅ OTP verified for ${cleanEmail}`);
 
-    return this.upsertUserAndSign(cleanEmail, referralCode);
+    return this.upsertUserAndSign(cleanEmail, referralCode, acceptedLegal);
   }
 
   /**
@@ -357,7 +369,11 @@ export class AuthService {
     return token || null;
   }
 
-  private async upsertUserAndSign(email: string, referralCode?: string) {
+  private async upsertUserAndSign(
+    email: string,
+    referralCode?: string,
+    acceptedLegal?: boolean,
+  ) {
     let user: any = await this.prisma.user.findUnique({
       where: { email },
       include: { membership: { include: { plan: true } }, addresses: true },
@@ -365,6 +381,14 @@ export class AuthService {
 
     if (user?.isBlocked) {
       throw new ForbiddenException('This account has been blocked. Contact support.');
+    }
+
+    // An account is a contract. Creating one without the customer ticking the
+    // Terms + Privacy checkbox would make the published policies untrue.
+    if (!user && acceptedLegal !== true) {
+      throw new BadRequestException(
+        'You must accept the Terms of Service and Privacy Policy to create an account.',
+      );
     }
 
     let referralApplied = false;
@@ -383,12 +407,20 @@ export class AuthService {
         );
       }
 
+      const consentedAt = new Date();
+
       const created = await this.prisma.$transaction(async (tx) => {
         const newUser = await tx.user.create({
           data: {
             email,
             name: email.split('@')[0],
             referralCode: await this.generateReferralCode(tx),
+            // Record the affirmative consent, not just the fact that signup
+            // happened: the timestamp and policy version are the audit trail.
+            termsAcceptedAt: consentedAt,
+            termsVersion: LEGAL_POLICY_VERSION,
+            privacyAcceptedAt: consentedAt,
+            privacyVersion: LEGAL_POLICY_VERSION,
             // No welcome wallet cash: it was farmable. New customers get the
             // WELCOME100 promotion, which is only redeemable on a real order.
           },
@@ -433,6 +465,20 @@ export class AuthService {
           referralApplied ? ' with referral' : ''
         }`,
       );
+    } else if (acceptedLegal === true && (!user.termsAcceptedAt || !user.privacyAcceptedAt)) {
+      // Accounts created before consent capture existed get the same audit
+      // trail the next time their owner affirmatively accepts the policies.
+      const consentedAt = new Date();
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          termsAcceptedAt: user.termsAcceptedAt ?? consentedAt,
+          termsVersion: user.termsVersion ?? LEGAL_POLICY_VERSION,
+          privacyAcceptedAt: user.privacyAcceptedAt ?? consentedAt,
+          privacyVersion: user.privacyVersion ?? LEGAL_POLICY_VERSION,
+        },
+        include: { membership: { include: { plan: true } }, addresses: true },
+      });
     }
 
     const payload = {

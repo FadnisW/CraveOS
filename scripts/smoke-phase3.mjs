@@ -250,7 +250,7 @@ async function main() {
 
   // -------------------------------------------------------------- sign-in
   const signIn = await bff('POST', '/auth/verify-otp', {
-    body: { email: USER_EMAIL, code: '123456' },
+    body: { email: USER_EMAIL, code: '123456', acceptedLegal: true },
   });
   check('sign-in succeeds', signIn.status === 200, signIn.json);
   check(

@@ -183,6 +183,8 @@ export interface Order {
   couponDiscount: number;
   finalPaidAmount: number;
   paymentMethod: 'UPI' | 'CARD' | 'WALLET' | 'UNKNOWN';
+  /** Server-recorded payment state, so the UI never calls an unpaid order paid. */
+  paymentStatus: 'INITIATED' | 'SUCCESS' | 'FAILED' | 'REFUNDED' | 'UNKNOWN';
   /** Absent when the server could not compute a delivery estimate. */
   estimatedDeliveryMins?: number;
   rider?: {

@@ -1,0 +1,87 @@
+name: CraveOS release gate
+
+# A tagged or published release is the only place the blocking legal gate runs.
+# Pull requests run the advisory check through `npm run verify`; a release must
+# prove that every legal identity value is real before an artifact is built.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  legal-and-build:
+    name: Legal identity gate and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: 1
+      NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+      # Legal identity is configuration. A missing secret becomes an empty
+      # value, and `check:legal:release` refuses to continue.
+      NEXT_PUBLIC_LEGAL_ENTITY_NAME: ${{ secrets.LEGAL_ENTITY_NAME }}
+      NEXT_PUBLIC_LEGAL_REGISTERED_ADDRESS: ${{ secrets.LEGAL_REGISTERED_ADDRESS }}
+      NEXT_PUBLIC_LEGAL_JURISDICTION: ${{ secrets.LEGAL_JURISDICTION }}
+      NEXT_PUBLIC_LEGAL_FSSAI_LICENCE: ${{ secrets.LEGAL_FSSAI_LICENCE }}
+      NEXT_PUBLIC_LEGAL_GSTIN: ${{ secrets.LEGAL_GSTIN }}
+      NEXT_PUBLIC_SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
+      NEXT_PUBLIC_SUPPORT_PHONE: ${{ secrets.SUPPORT_PHONE }}
+      NEXT_PUBLIC_GRIEVANCE_OFFICER_NAME: ${{ secrets.GRIEVANCE_OFFICER_NAME }}
+      NEXT_PUBLIC_GRIEVANCE_OFFICER_EMAIL: ${{ secrets.GRIEVANCE_OFFICER_EMAIL }}
+      NEXT_PUBLIC_GRIEVANCE_OFFICER_PHONE: ${{ secrets.GRIEVANCE_OFFICER_PHONE }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/api/package-lock.json
+
+      - name: Install storefront dependencies
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: apps/api
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Block fake customer surfaces
+        run: npm run check:no-fakes
+
+      - name: Block incomplete legal identity
+        run: npm run check:legal:release
+
+      - name: Typecheck storefront
+        run: npm run typecheck
+
+      - name: Typecheck API
+        run: npm run typecheck
+        working-directory: apps/api
+
+      - name: Build storefront with the approved legal identity
+        run: npm run build
+
+      - name: Build API
+        run: npm run build
+        working-directory: apps/api

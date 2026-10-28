@@ -165,6 +165,24 @@ const RULES = [
     include: ['src/'],
     pattern: /\.accessToken\b/,
   },
+  {
+    id: 'hardcoded-gstin',
+    why: 'A GSTIN is legal identity, not copy. It must come from NEXT_PUBLIC_LEGAL_GSTIN so the release gate can verify it.',
+    include: ['src/', 'app/', 'apps/api/src/'],
+    pattern: /\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/,
+  },
+  {
+    id: 'hardcoded-fssai',
+    why: 'An FSSAI licence number is legal identity, not copy. It must come from NEXT_PUBLIC_LEGAL_FSSAI_LICENCE so the release gate can verify it.',
+    include: ['src/', 'app/', 'apps/api/src/'],
+    pattern: /\b\d{14}\b/,
+  },
+  {
+    id: 'invented-certification',
+    why: 'Do not claim a certification or approval the operator has not supplied. FSSAI and GST values are configuration, not marketing copy.',
+    include: ['src/', 'app/'],
+    pattern: /\bISO\s*22000\b|\bFSSAI\s+certified\b|\b100%\s+safe\b/i,
+  },
 ];
 
 const ALLOW_MARKER = 'no-fakes-allow';
@@ -212,6 +230,7 @@ function isAllowed(lines, index, ruleId) {
 function scanCode() {
   const files = [];
   walk(join(ROOT, 'src'), files);
+  walk(join(ROOT, 'app'), files);
   walk(join(ROOT, 'apps', 'api', 'src'), files);
 
   const findings = [];
@@ -344,7 +363,7 @@ function scanRegistry() {
     if (status === 'LIVE') {
       const paths = [...surface.matchAll(/`([^`]+)`/g)]
         .map((match) => match[1])
-        .filter((value) => /^(src|apps|prisma|scripts)\//.test(value));
+        .filter((value) => /^(src|app|apps|prisma|scripts)\//.test(value));
 
       for (const candidate of paths) {
         if (!existsSync(join(ROOT, candidate))) {

@@ -2,20 +2,27 @@
 
 import React from 'react';
 import { ShieldCheck, Phone, Mail, MapPin } from 'lucide-react';
+import { isLegalPlaceholder, legalIdentity } from '../lib/legal';
 
 interface FooterProps {
   onNavigate: (view: string) => void;
 }
 
-/**
- * Legal and support identity values are deliberately marked placeholders.
- * They must be replaced with the registered entity's real details before the
- * launch gate in docs/FEATURES.md can pass.
- */
-const LEGAL_ENTITY_NAME = '{{LEGAL_ENTITY_NAME}}';
-const SUPPORT_EMAIL = '{{SUPPORT_EMAIL}}';
-const SUPPORT_PHONE = '{{SUPPORT_PHONE}}';
-const REGISTERED_ADDRESS = '{{REGISTERED_ADDRESS}}';
+/** A configured value, or a visibly marked placeholder until launch. */
+const ConfiguredValue: React.FC<{ value: string }> = ({ value }) => {
+  if (isLegalPlaceholder(value)) {
+    return (
+      <span
+        className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-900 dark:bg-amber-950/60 dark:text-amber-200"
+        title="Placeholder — replace before launch"
+      >
+        {value}
+      </span>
+    );
+  }
+
+  return <span>{value}</span>;
+};
 
 export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
   return (
@@ -69,7 +76,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 lg:gap-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8 lg:gap-12">
           <div className="lg:col-span-2 space-y-4">
             <div className="flex items-center gap-2">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-rose-600 to-rose-500 flex items-center justify-center text-white font-extrabold text-lg shadow-md">
@@ -125,23 +132,57 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
             <div className="space-y-2 text-xs text-slate-400">
               <p className="flex items-center gap-2">
                 <Mail className="w-3.5 h-3.5 text-rose-500" />
-                <span title="Placeholder — replace before launch">{SUPPORT_EMAIL}</span>
+                <ConfiguredValue value={legalIdentity.supportEmail} />
               </p>
               <p className="flex items-center gap-2">
                 <Phone className="w-3.5 h-3.5 text-rose-500" />
-                <span title="Placeholder — replace before launch">{SUPPORT_PHONE}</span>
+                <ConfiguredValue value={legalIdentity.supportPhone} />
               </p>
               <p className="flex items-start gap-2">
                 <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
-                <span title="Placeholder — replace before launch">{REGISTERED_ADDRESS}</span>
+                <ConfiguredValue value={legalIdentity.registeredAddress} />
               </p>
             </div>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-widest text-slate-200">
+              Legal
+            </h4>
+            <ul className="space-y-2 text-xs text-slate-400">
+              <li>
+                <a href="/legal/terms" className="hover:text-rose-400 transition-colors">
+                  Terms of Service
+                </a>
+              </li>
+              <li>
+                <a href="/legal/privacy" className="hover:text-rose-400 transition-colors">
+                  Privacy Policy
+                </a>
+              </li>
+              <li>
+                <a href="/legal/refunds" className="hover:text-rose-400 transition-colors">
+                  Refunds &amp; cancellations
+                </a>
+              </li>
+              <li>
+                <a href="/legal/delivery" className="hover:text-rose-400 transition-colors">
+                  Delivery terms
+                </a>
+              </li>
+              <li>
+                <a href="/legal/contact" className="hover:text-rose-400 transition-colors">
+                  Contact &amp; grievance
+                </a>
+              </li>
+            </ul>
           </div>
         </div>
 
         <div className="pt-8 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
           <p>
-            © {new Date().getFullYear()} {LEGAL_ENTITY_NAME}. All rights reserved.
+            © {new Date().getFullYear()} <ConfiguredValue value={legalIdentity.entityName} />. All
+            rights reserved.
           </p>
 
           <div className="flex items-center gap-4 text-[11px]">

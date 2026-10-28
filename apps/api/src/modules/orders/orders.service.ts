@@ -14,6 +14,7 @@ import { Queue } from 'bullmq';
 import { KITCHEN_QUEUE } from '../queue/queue.constants';
 import { LogisticsService } from '../logistics/logistics.service';
 import { OrderTrackingGateway } from '../websockets/websockets.gateway';
+import { PaymentsService } from '../payments/payments.service';
 import { AuthenticatedActor } from '../../common/types/authenticated-actor';
 
 export type { AuthenticatedActor };
@@ -52,6 +53,7 @@ export class OrdersService {
     private readonly pricingService: PricingService,
     private readonly logisticsService: LogisticsService,
     private readonly websocketsGateway: OrderTrackingGateway,
+    private readonly paymentsService: PaymentsService,
     @Inject(KITCHEN_QUEUE) private readonly kitchenQueue: Queue,
   ) {}
 
@@ -439,135 +441,219 @@ export class OrdersService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Cancels an order that has not been paid and has not entered the kitchen.
+   * Cancels an order on the customer's request.
    *
-   * Checkout calls this when the customer dismisses the Razorpay modal or the
-   * payment fails, so an abandoned attempt does not leave a live, unpaid order
-   * sitting in the dispatch queue. Paid orders are deliberately rejected here:
-   * they need the refund flow, not a silent cancellation.
+   * Unpaid attempts are cancelled outright. Paid orders are refunded in full
+   * first — wallet credit returns immediately, gateway money returns to the
+   * original instrument — and only then marked CANCELLED. The order row is
+   * locked so two taps cannot refund the same rupees twice. Once any kitchen
+   * ticket has been accepted, or a rider is assigned, cancellation is refused
+   * because food may already be in preparation.
    */
-  async cancelUnpaidOrder(orderId: string, actor: AuthenticatedActor, reason?: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { payment: true, brandOrders: true, deliveryTrip: true },
-    });
+  async cancelOrder(orderId: string, actor: AuthenticatedActor, reason?: string) {
+    const cancellationReason =
+      String(reason || '').trim() ||
+      'Cancelled before the kitchen accepted the order';
 
-    if (!order) {
-      throw new NotFoundException(`Order ${orderId} not found`);
-    }
+    const outcome = await this.prisma.$transaction(
+      async (tx) => {
+        // Serialise concurrent cancel taps. Without this, both requests can see
+        // a SUCCESS payment and issue two refunds for the same order.
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT "id" FROM "orders" WHERE "id" = ${orderId} FOR UPDATE
+        `;
 
-    if (actor?.role !== 'ADMIN' && order.userId !== actor?.sub) {
-      throw new ForbiddenException('You can only cancel your own orders');
-    }
+        if (locked.length === 0) {
+          throw new NotFoundException(`Order ${orderId} not found`);
+        }
 
-    if (order.status === 'CANCELLED') {
-      return order;
-    }
-
-    if (order.payment?.status === 'SUCCESS') {
-      throw new ConflictException(
-        'This order is already paid. Contact support for a refund instead of cancelling.',
-      );
-    }
-
-    const kitchenStarted = order.brandOrders.some((ticket) =>
-      ['ACCEPTED', 'PREPARING', 'READY'].includes(ticket.status),
-    );
-    if (kitchenStarted) {
-      throw new ConflictException('The kitchen has already started this order.');
-    }
-
-    if (
-      order.deliveryTrip &&
-      !['UNASSIGNED', 'CANCELLED'].includes(order.deliveryTrip.status)
-    ) {
-      throw new ConflictException('A rider is already handling this order.');
-    }
-
-    const cancelled = await this.prisma.$transaction(async (tx) => {
-      // If wallet money was debited at creation (WALLET, or wallet credit that
-      // covered the whole bill), put it back. For UPI / CARD the wallet is only
-      // debited on verified payment success, so there is nothing to refund here.
-      const walletSpend = await tx.walletTransaction.findFirst({
-        where: { orderId, reason: 'ORDER_SPEND' },
-      });
-
-      if (walletSpend && order.walletAppliedPaise > 0) {
-        await tx.user.update({
-          where: { id: order.userId },
-          data: { walletBalance: { increment: order.walletAppliedPaise } },
+        const order = await tx.order.findUnique({
+          where: { id: orderId },
+          include: { payment: true, brandOrders: true, deliveryTrip: true },
         });
 
-        await tx.walletTransaction.create({
-          data: {
-            userId: order.userId,
-            amountInPaise: order.walletAppliedPaise,
-            reason: 'ORDER_REFUND',
+        if (!order) {
+          throw new NotFoundException(`Order ${orderId} not found`);
+        }
+
+        if (actor?.role !== 'ADMIN' && order.userId !== actor?.sub) {
+          throw new ForbiddenException('You can only cancel your own orders');
+        }
+
+        if (order.status === 'CANCELLED') {
+          return { order, alreadyCancelled: true, refund: null };
+        }
+
+        const kitchenStarted = order.brandOrders.some((ticket) =>
+          ['ACCEPTED', 'PREPARING', 'READY'].includes(ticket.status),
+        );
+        if (kitchenStarted) {
+          throw new ConflictException(
+            'The kitchen has already started this order, so it can no longer be cancelled. Contact support if something is wrong.',
+          );
+        }
+
+        if (
+          order.deliveryTrip &&
+          !['UNASSIGNED', 'CANCELLED'].includes(order.deliveryTrip.status)
+        ) {
+          throw new ConflictException('A rider is already handling this order.');
+        }
+
+        const isPaid = order.payment?.status === 'SUCCESS';
+        const alreadyRefunded = order.payment?.status === 'REFUNDED';
+        // A retry after a partially-committed cancellation must still keep the
+        // collected amounts so the refund ledger can net them to zero.
+        const wasPaid = isPaid || alreadyRefunded;
+        let refund: {
+          refundPaise: number;
+          walletRefundPaise: number;
+          gateway: string;
+          refundId: string | null;
+        } | null = null;
+        let refundedWalletPaise = 0;
+
+        if (isPaid) {
+          if (order.payment && order.payment.amountInPaise > 0) {
+            refund = await this.paymentsService.refundOrderInFull(
+              orderId,
+              cancellationReason,
+              actor?.sub || 'system',
+            );
+            refundedWalletPaise =
+              (refund.gateway === 'wallet' ? refund.refundPaise : 0) +
+              refund.walletRefundPaise;
+          } else {
+            // A ₹0 order has nothing to send back, but the payment row should
+            // still reflect that the order will never be fulfilled.
+            await tx.payment.update({
+              where: { orderId },
+              data: { status: 'REFUNDED', refundedAt: new Date() },
+            });
+          }
+        } else {
+          // Wallet money can be debited at creation when wallet credit covers
+          // the whole bill. If a payment attempt was abandoned afterwards, put
+          // that credit back even though the payment row is not SUCCESS.
+          //
+          // A retry can see `REFUNDED` if the refund committed but the outer
+          // cancellation transaction failed. The ledger aggregate makes this
+          // branch idempotent: only the not-yet-returned part is credited.
+          const walletSpend = await tx.walletTransaction.findFirst({
+            where: { orderId, reason: 'ORDER_SPEND' },
+          });
+
+          if (walletSpend && order.walletAppliedPaise > 0) {
+            const walletRefunds = await tx.walletTransaction.aggregate({
+              where: {
+                orderId,
+                reason: { in: ['ORDER_REFUND', 'PARTIAL_ORDER_REFUND'] },
+              },
+              _sum: { amountInPaise: true },
+            });
+            const alreadyReturnedPaise = walletRefunds._sum.amountInPaise ?? 0;
+            const refundableWalletPaise = Math.max(
+              0,
+              order.walletAppliedPaise - alreadyReturnedPaise,
+            );
+
+            if (refundableWalletPaise > 0) {
+              await tx.user.update({
+                where: { id: order.userId },
+                data: { walletBalance: { increment: refundableWalletPaise } },
+              });
+
+              await tx.walletTransaction.create({
+                data: {
+                  userId: order.userId,
+                  amountInPaise: refundableWalletPaise,
+                  reason: 'ORDER_REFUND',
+                  orderId,
+                },
+              });
+
+              refundedWalletPaise = refundableWalletPaise;
+            }
+          }
+        }
+
+        await tx.brandOrder.updateMany({
+          where: {
             orderId,
+            status: { in: ['SENT_TO_KITCHEN', 'ACCEPTED', 'PREPARING', 'READY'] },
+          },
+          data: {
+            status: 'REJECTED',
+            rejectedAt: new Date(),
+            rejectReason: cancellationReason,
           },
         });
-      }
 
-      await tx.brandOrder.updateMany({
-        where: {
-          orderId,
-          status: { in: ['SENT_TO_KITCHEN', 'ACCEPTED', 'PREPARING', 'READY'] },
-        },
-        data: {
-          status: 'REJECTED',
-          rejectedAt: new Date(),
-          rejectReason: reason || 'Cancelled before preparation',
-        },
-      });
-
-      if (order.payment) {
-        await tx.payment.update({
-          where: { orderId },
-          data: { status: 'FAILED' },
+        // Cancelling the order must also close its delivery trip. A trip left
+        // UNASSIGNED/ASSIGNED would keep a rider busy forever and make the
+        // order look live in the dispatch board.
+        await tx.deliveryTrip.updateMany({
+          where: { orderId, status: { notIn: ['DELIVERED', 'CANCELLED'] } },
+          data: { status: 'CANCELLED' },
         });
-      }
 
-      const updated = await tx.order.update({
-        where: { id: orderId },
-        data: {
-          status: 'CANCELLED',
-          finalPaidPaise: 0,
-          walletAppliedPaise: 0,
-        },
-        include: {
-          brandOrders: { include: { items: true } },
-          address: true,
-          hub: true,
-          payment: true,
-        },
-      });
+        if (!isPaid && !alreadyRefunded && order.payment) {
+          await tx.payment.update({
+            where: { orderId },
+            data: { status: 'FAILED' },
+          });
+        }
 
-      // An unpaid, cancelled order never delivered anything. Release the coupon
-      // so a dismissed payment does not burn the customer's one-use code.
-      await tx.promotionRedemption.deleteMany({ where: { orderId } });
-
-      await tx.auditLog.create({
-        data: {
-          action: 'ORDER_CANCELLED_UNPAID',
-          actorId: actor?.sub,
-          recordId: orderId,
-          diff: {
-            reason: reason || 'Customer abandoned payment',
-            refundedWalletPaise: walletSpend ? order.walletAppliedPaise : 0,
+        const updated = await tx.order.update({
+          where: { id: orderId },
+          data: {
+            status: 'CANCELLED',
+            // A paid order keeps its collected amount so the refund ledgers can
+            // net it to zero; rewriting it to zero would hide the refund.
+            ...(wasPaid ? {} : { finalPaidPaise: 0, walletAppliedPaise: 0 }),
           },
-        },
+          include: {
+            brandOrders: { include: { items: true } },
+            address: true,
+            hub: true,
+            payment: true,
+          },
+        });
+
+        // A cancelled order never delivered anything. Release the coupon so a
+        // cancellation does not burn the customer's one-use code.
+        await tx.promotionRedemption.deleteMany({ where: { orderId } });
+
+        await tx.auditLog.create({
+          data: {
+            action: wasPaid ? 'ORDER_CANCELLED_REFUNDED' : 'ORDER_CANCELLED_UNPAID',
+            actorId: actor?.sub,
+            recordId: orderId,
+            diff: {
+              reason: cancellationReason,
+              refundedWalletPaise,
+              refundedGatewayPaise:
+                refund && refund.gateway === 'razorpay' ? refund.refundPaise : 0,
+              refundId: refund?.refundId ?? null,
+              alreadyRefunded,
+            },
+          },
+        });
+
+        return { order: updated, alreadyCancelled: false, refund };
+      },
+      { timeout: 30_000 },
+    );
+
+    if (!outcome.alreadyCancelled) {
+      this.websocketsGateway.emitOrderStatusUpdate(orderId, 'CANCELLED', {
+        orderId,
+        status: 'CANCELLED',
+        reason: cancellationReason,
       });
+    }
 
-      return updated;
-    });
-
-    this.websocketsGateway.emitOrderStatusUpdate(orderId, 'CANCELLED', {
-      orderId,
-      status: 'CANCELLED',
-      reason: reason || 'Cancelled before payment',
-    });
-
-    return cancelled;
+    return outcome.order;
   }
 
   // ---------------------------------------------------------------------------
@@ -935,9 +1021,14 @@ export class OrdersService {
       });
 
       // A fully rejected order is refunded and cancelled. Release the coupon so
-      // the customer can use it on a replacement order.
+      // the customer can use it on a replacement order, and close the delivery
+      // trip so an assigned rider is not stranded on a dead order.
       if (allRejected) {
         await tx.promotionRedemption.deleteMany({ where: { orderId } });
+        await tx.deliveryTrip.updateMany({
+          where: { orderId, status: { notIn: ['DELIVERED', 'CANCELLED'] } },
+          data: { status: 'CANCELLED' },
+        });
       }
 
       await tx.auditLog.create({

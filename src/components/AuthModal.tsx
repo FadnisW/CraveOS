@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api-client';
 import {
   X,
@@ -32,8 +32,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [referralCode, setReferralCode] = useState<string>('');
   const [referralNotice, setReferralNotice] = useState<string | null>(null);
   const [demoCode, setDemoCode] = useState<string | null>(null);
+  const [acceptedLegal, setAcceptedLegal] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // A dismissed modal must not remember a previous acceptance. Consent is
+  // affirmative and specific to the sign-in it was given for.
+  useEffect(() => {
+    if (!isOpen) {
+      setStep('IDENTITY');
+      setOtp('');
+      setDemoCode(null);
+      setReferralNotice(null);
+      setAcceptedLegal(false);
+      setErrorMsg(null);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -79,6 +93,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (mode === 'EMAIL' && !acceptedLegal) {
+      setErrorMsg(
+        'Tick the box to accept the Terms of Service and Privacy Policy before creating or signing in to an account.',
+      );
+      return;
+    }
+
     setIsLoading(true);
     setErrorMsg(null);
 
@@ -99,6 +121,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         email.trim(),
         otp.trim(),
         referralCode.trim() || undefined,
+        acceptedLegal,
       );
       if (res.user) {
         onSuccess(res.user);
@@ -298,6 +321,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                 )}
               </div>
 
+              {mode === 'EMAIL' && (
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-gray-50 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={acceptedLegal}
+                    onChange={(e) => setAcceptedLegal(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-rose-600 focus:ring-rose-500"
+                  />
+                  <span className="text-[11px] leading-relaxed text-gray-600 dark:text-slate-300">
+                    I agree to the{' '}
+                    <a
+                      href="/legal/terms"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold text-rose-600 dark:text-rose-400 underline"
+                    >
+                      Terms of Service
+                    </a>{' '}
+                    and{' '}
+                    <a
+                      href="/legal/privacy"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold text-rose-600 dark:text-rose-400 underline"
+                    >
+                      Privacy Policy
+                    </a>
+                    , and I confirm I am 18 or older.
+                  </span>
+                </label>
+              )}
+
               {referralNotice && (
                 <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-bold space-y-2">
                   <p>{referralNotice}</p>
@@ -314,8 +369,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               {!referralNotice && (
                 <button
                   type="submit"
-                  disabled={isLoading}
-                  className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-sm shadow-lg shadow-rose-500/20 transition-all flex items-center justify-center gap-2"
+                  disabled={isLoading || (mode === 'EMAIL' && !acceptedLegal)}
+                  className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-sm shadow-lg shadow-rose-500/20 transition-all flex items-center justify-center gap-2"
                 >
                   <span>{isLoading ? 'Verifying...' : 'Verify & Sign In'}</span>
                   <ShieldCheck className="w-4 h-4" />

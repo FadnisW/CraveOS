@@ -69,6 +69,10 @@ export type ApiOrder = {
   brandOrders?: ApiBrandOrder[];
   address?: ApiAddress | null;
   hubId?: string;
+  payment?: {
+    status?: string;
+    gateway?: string;
+  } | null;
   deliveryTrip?: {
     rider?: ApiRider | null;
     status?: string;
@@ -159,6 +163,12 @@ export function mapApiOrder(order: ApiOrder): Order {
   )
     ? (order.paymentMethod as Order['paymentMethod'])
     : 'UNKNOWN';
+  const paymentStatuses = ['INITIATED', 'SUCCESS', 'FAILED', 'REFUNDED'] as const;
+  const paymentStatus = paymentStatuses.includes(
+    order.payment?.status as (typeof paymentStatuses)[number],
+  )
+    ? (order.payment?.status as Order['paymentStatus'])
+    : 'UNKNOWN';
 
   return {
     id: order.id,
@@ -187,6 +197,7 @@ export function mapApiOrder(order: ApiOrder): Order {
     couponDiscount: Number(order.discountBreakdown?.couponDiscount) || 0,
     finalPaidAmount: paiseToRupees(order.finalPaidPaise),
     paymentMethod,
+    paymentStatus,
     estimatedDeliveryMins:
       typeof order.estimatedDeliveryMins === 'number' && order.estimatedDeliveryMins > 0
         ? order.estimatedDeliveryMins
